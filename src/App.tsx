@@ -279,22 +279,6 @@ export default function App() {
           className="text-center max-w-2xl"
         >
           <h1 className="text-5xl font-bold mb-4 tracking-tight text-blue-500">RP Midia Indoor</h1>
-          <p className="text-neutral-400 text-lg mb-8">
-            Sincronização automática em tempo real com seu Google Drive. 
-            {error ? (
-              <div className="mt-4 p-4 bg-red-900/20 border border-red-900/50 rounded-xl text-red-400 text-sm">
-                <p className="font-bold mb-1">Erro detectado:</p>
-                <p>{error}</p>
-                <p className="mt-2 text-xs opacity-70">
-                  ID da Pasta: {settings.driveFolderId || 'Não configurado'}
-                </p>
-              </div>
-            ) : files.length > 0 
-              ? `Pronto para exibir ${files.length} arquivos.`
-              : settings.driveFolderId 
-                ? "Buscando arquivos na pasta... Se demorar, verifique se a pasta é pública."
-                : "Configure uma pasta do Google Drive para começar."}
-          </p>
           
           <div className="flex gap-4 justify-center items-center">
             <button 
@@ -315,11 +299,6 @@ export default function App() {
               <Settings /> CONFIGS
             </button>
             {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
-            {lastSync && !isFetching && (
-              <span className="text-[10px] text-neutral-500">
-                Sincronizado: {lastSync.toLocaleTimeString()}
-              </span>
-            )}
           </div>
 
           {files.length === 0 && settings.driveFolderId && (
@@ -350,7 +329,6 @@ export default function App() {
                     rows={2}
                     className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm resize-none break-all"
                   />
-                  <p className="text-[9px] text-neutral-500 mt-1">Ex: https://drive.google.com/drive/folders/ID_DA_PASTA</p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -501,20 +479,6 @@ export default function App() {
                       }}
                       className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                     />
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-neutral-800">
-                  <h3 className="text-xs font-bold text-blue-400 mb-2 flex items-center gap-2">
-                    <Maximize className="w-3 h-3" /> MODO QUIOSQUE (TV BOX / ANDROID)
-                  </h3>
-                  <div className="bg-blue-900/10 border border-blue-900/30 p-3 rounded-xl text-[10px] text-neutral-300 leading-tight">
-                    <ul className="grid grid-cols-2 gap-x-4 gap-y-1 list-disc pl-3">
-                      <li><strong>Fixar Tela:</strong> Use a função no Android.</li>
-                      <li><strong>Auto-Início:</strong> App "Autostart" na Play Store.</li>
-                      <li><strong>PWA:</strong> "Adicionar à tela inicial".</li>
-                      <li className="text-blue-400/80 italic">Wake Lock ativo.</li>
-                    </ul>
                   </div>
                 </div>
 
