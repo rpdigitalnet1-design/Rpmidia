@@ -1,0 +1,17 @@
+{
+  "name": "RP Midia Indoor",
+  "short_name": "RP Midia",
+  "description": "Solução de Mídia Indoor via Google Drive",
+  "start_url": "/",
+  "display": "fullscreen",
+  "background_color": "#000000",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2965/2965306.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
