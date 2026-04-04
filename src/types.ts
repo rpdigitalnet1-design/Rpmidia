@@ -20,4 +20,7 @@ export interface AppSettings {
   autoStart: boolean;
   driveFolderId: string;
   isMuted: boolean;
+  syncInterval: number; // in milliseconds
+  websiteRefreshInterval: number; // in milliseconds
+  appRefreshInterval: number; // in milliseconds
 }

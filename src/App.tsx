@@ -19,7 +19,10 @@ export default function App() {
       websiteDuration: 30000,
       autoStart: false,
       driveFolderId: '',
-      isMuted: true
+      isMuted: true,
+      syncInterval: 30000,
+      websiteRefreshInterval: 0,
+      appRefreshInterval: 0
     };
     
     if (saved) {
@@ -94,9 +97,9 @@ export default function App() {
 
   useEffect(() => {
     fetchFiles();
-    const interval = setInterval(fetchFiles, 30000); // Sincroniza a cada 30 segundos
+    const interval = setInterval(fetchFiles, settings.syncInterval);
     return () => clearInterval(interval);
-  }, [fetchFiles]);
+  }, [fetchFiles, settings.syncInterval]);
 
   // Auto-retry once on error if folder is set
   useEffect(() => {
@@ -197,7 +200,28 @@ export default function App() {
 
   const currentFile = files[currentIndex];
 
+  useEffect(() => {
+    if (!isPlaying || settings.appRefreshInterval <= 0) return;
+
+    const interval = setInterval(() => {
+      window.location.reload();
+    }, settings.appRefreshInterval);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, settings.appRefreshInterval]);
+
   const [websiteUrl, setWebsiteUrl] = useState<string | null>(null);
+  const [websiteKey, setWebsiteKey] = useState(0);
+
+  useEffect(() => {
+    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval <= 0) return;
+
+    const interval = setInterval(() => {
+      setWebsiteKey(prev => prev + 1);
+    }, settings.websiteRefreshInterval);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, currentFile, settings.websiteRefreshInterval]);
 
   useEffect(() => {
     if (!isPlaying || !currentFile || !currentFile.isWebsite) {
@@ -430,6 +454,54 @@ export default function App() {
                       className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                     />
                   </div>
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Sincronização (s)</label>
+                    <input 
+                      type="number"
+                      min="10"
+                      value={settings.syncInterval / 1000}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) * 1000;
+                        if (isNaN(val)) return;
+                        const newSettings = { ...settings, syncInterval: val };
+                        setSettings(newSettings);
+                        localStorage.setItem('app_settings', JSON.stringify(newSettings));
+                      }}
+                      className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Recarregar Site (s)</label>
+                    <input 
+                      type="number"
+                      min="0"
+                      value={settings.websiteRefreshInterval / 1000}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) * 1000;
+                        if (isNaN(val)) return;
+                        const newSettings = { ...settings, websiteRefreshInterval: val };
+                        setSettings(newSettings);
+                        localStorage.setItem('app_settings', JSON.stringify(newSettings));
+                      }}
+                      className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Recarregar App (s)</label>
+                    <input 
+                      type="number"
+                      min="0"
+                      value={settings.appRefreshInterval / 1000}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) * 1000;
+                        if (isNaN(val)) return;
+                        const newSettings = { ...settings, appRefreshInterval: val };
+                        setSettings(newSettings);
+                        localStorage.setItem('app_settings', JSON.stringify(newSettings));
+                      }}
+                      className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                  </div>
                 </div>
 
                 <div className="pt-3 border-t border-neutral-800">
@@ -560,6 +632,7 @@ export default function App() {
                 <div className="w-full h-full bg-white">
                   {websiteUrl ? (
                     <iframe 
+                      key={websiteKey}
                       src={websiteUrl} 
                       className="w-full h-full border-none"
                       title={currentFile.name}
