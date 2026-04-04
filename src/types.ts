@@ -2,7 +2,10 @@ export interface DriveFile {
   id: string;
   name: string;
   isVideo: boolean;
+  isAudio?: boolean;
   isWebsite?: boolean;
+  isStream?: boolean;
+  isYouTube?: boolean;
   websiteUrl?: string;
   mimeType: string;
   thumbnail: string;

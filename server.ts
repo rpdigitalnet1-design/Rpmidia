@@ -128,18 +128,22 @@ async function startServer() {
             if (id && name && !files.find(f => f.id === id)) {
               const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
               const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
-              const isTxt = /\.txt$/i.test(name);
+              const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(name);
+              const isWeb = /\.(txt|url)$/i.test(name);
               
-              if (isVideo || isImage || isTxt) {
+              if (isVideo || isImage || isWeb || isAudio) {
                 files.push({
                   id,
                   name,
                   isVideo,
-                  isWebsite: isTxt,
-                  thumbnail: isTxt 
+                  isAudio,
+                  isWebsite: isWeb,
+                  thumbnail: isWeb 
                     ? `https://cdn-icons-png.flaticon.com/512/2965/2965306.png` 
+                    : isAudio
+                    ? `https://cdn-icons-png.flaticon.com/512/3083/3083417.png`
                     : `https://drive.google.com/thumbnail?id=${id}&sz=w1000`,
-                  url: isTxt ? `/api/website/${id}` : `/api/proxy/${id}`
+                  url: isWeb ? `/api/website/${id}` : `/api/proxy/${id}`
                 });
               }
             }
@@ -156,18 +160,22 @@ async function startServer() {
               if (name && name.length > 4 && name.includes('.')) {
                 const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
                 const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
-                const isTxt = /\.txt$/i.test(name);
+                const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(name);
+                const isWeb = /\.(txt|url)$/i.test(name);
                 
-                if (isVideo || isImage || isTxt) {
+                if (isVideo || isImage || isWeb || isAudio) {
                   files.push({
                     id,
                     name,
                     isVideo,
-                    isWebsite: isTxt,
-                    thumbnail: isTxt 
+                    isAudio,
+                    isWebsite: isWeb,
+                    thumbnail: isWeb 
                       ? `https://cdn-icons-png.flaticon.com/512/2965/2965306.png` 
+                      : isAudio
+                      ? `https://cdn-icons-png.flaticon.com/512/3083/3083417.png`
                       : `https://drive.google.com/thumbnail?id=${id}&sz=w1000`,
-                    url: isTxt ? `/api/website/${id}` : `/api/proxy/${id}`
+                    url: isWeb ? `/api/website/${id}` : `/api/proxy/${id}`
                   });
                 }
               }
@@ -190,18 +198,22 @@ async function startServer() {
               if (id && name && !files.find(f => f.id === id)) {
                 const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
                 const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
-                const isTxt = /\.txt$/i.test(name);
+                const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(name);
+                const isWeb = /\.(txt|url)$/i.test(name);
                 
-                if (isVideo || isImage || isTxt) {
+                if (isVideo || isImage || isWeb || isAudio) {
                   files.push({
                     id,
                     name,
                     isVideo,
-                    isWebsite: isTxt,
-                    thumbnail: isTxt 
+                    isAudio,
+                    isWebsite: isWeb,
+                    thumbnail: isWeb 
                       ? `https://cdn-icons-png.flaticon.com/512/2965/2965306.png` 
+                      : isAudio
+                      ? `https://cdn-icons-png.flaticon.com/512/3083/3083417.png`
                       : `https://drive.google.com/thumbnail?id=${id}&sz=w1000`,
-                    url: isTxt ? `/api/website/${id}` : `/api/proxy/${id}`
+                    url: isWeb ? `/api/website/${id}` : `/api/proxy/${id}`
                   });
                 }
               }
@@ -232,8 +244,8 @@ async function startServer() {
         try {
           // Background sync: Download new files
           for (const file of files) {
-            const isTxt = /\.txt$/i.test(file.name);
-            const ext = path.extname(file.name) || (file.isVideo ? '.mp4' : (isTxt ? '.txt' : '.jpg'));
+            const isWeb = /\.(txt|url)$/i.test(file.name);
+            const ext = path.extname(file.name) || (file.isVideo ? '.mp4' : (isWeb ? '.txt' : '.jpg'));
             const filePath = path.join(CACHE_DIR, `${file.id}${ext}`);
             if (!fs.existsSync(filePath)) {
               await downloadFile(file.id, filePath);
@@ -262,27 +274,102 @@ async function startServer() {
     }
   });
 
-  // API: Resolve website URL from .txt file
+  // API: Resolve website URL from .txt or .url file
   app.get('/api/website/:id', async (req, res) => {
     const { id } = req.params;
-    const filePath = path.join(CACHE_DIR, `${id}.txt`);
     
     try {
-      // Ensure file exists in cache
+      // Try to find in cache with either extension
+      let filePath = path.join(CACHE_DIR, `${id}.txt`);
       if (!fs.existsSync(filePath)) {
+        filePath = path.join(CACHE_DIR, `${id}.url`);
+      }
+      
+      // If not in cache, we don't know the original extension here, 
+      // so we try to download it. We'll save it as .txt by default for simplicity.
+      if (!fs.existsSync(filePath)) {
+        filePath = path.join(CACHE_DIR, `${id}.txt`);
         await downloadFile(id, filePath);
       }
       
-      const content = fs.readFileSync(filePath, 'utf8');
-      // Simple regex to find the first URL in the file
-      const urlMatch = content.match(/https?:\/\/[^\s\n\r]+/);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Arquivo não encontrado' });
+      }
+
+      const content = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+      console.log(`Processing website file ${id}, content length: ${content.length}`);
       
+      // Robust URL extraction
+      let url = '';
+      
+      // 1. Try URL=... (standard .url format)
+      const urlMatch = content.match(/URL\s*=\s*([^\s\n\r]+)/i);
       if (urlMatch) {
-        res.json({ url: urlMatch[0] });
+        url = urlMatch[1].trim();
+      } 
+      
+      // 2. If not found, try any http/https link anywhere in the file
+      if (!url || !url.includes('.')) {
+        const genericUrlMatch = content.match(/https?:\/\/[^\s\n\r"']+/);
+        if (genericUrlMatch) {
+          url = genericUrlMatch[0].trim();
+        }
+      }
+
+      // 3. Special check for m3u8 or /ts links which might not have http
+      if (!url || (!url.toLowerCase().includes('.m3u8') && !url.toLowerCase().includes('/ts'))) {
+        const streamMatch = content.match(/[^\s\n\r"']+(\.m3u8|\/ts)[^\s\n\r"']*/i);
+        if (streamMatch) {
+          url = streamMatch[0].trim();
+        }
+      }
+      
+      // 4. Fallback: find the first line that looks like a domain/path
+      if (!url || !url.includes('.')) {
+        const lines = content.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+        for (const line of lines) {
+          // Skip headers like [InternetShortcut]
+          if (line.startsWith('[') && line.endsWith(']')) continue;
+          
+          // Take the first word that contains a dot
+          const words = line.split(/\s+/);
+          for (const word of words) {
+            if (word.includes('.') && !word.includes('=') && word.length > 3 && !word.startsWith('[')) {
+              url = word;
+              break;
+            }
+          }
+          if (url) break;
+        }
+      }
+      
+      if (url) {
+        // Clean up the URL
+        url = url.replace(/["'\]\);,]+$/, '').trim();
+        
+        // Remove common trailing garbage words from user notes
+        const garbageWords = ['ai', 'pula', 'os', 'inicio', 'abra', 'so', 'o', 'site', 'clique', 'aqui'];
+        let parts = url.split('/');
+        let lastPart = parts[parts.length - 1].toLowerCase();
+        
+        if (garbageWords.includes(lastPart)) {
+          parts.pop();
+          url = parts.join('/');
+        }
+        
+        // Ensure protocol
+        if (!url.startsWith('http')) {
+          url = url.startsWith('//') ? `https:${url}` : `https://${url}`;
+        }
+        
+        console.log(`Resolved website URL for ID ${id}: ${url}`);
+        res.json({ url });
       } else {
-        res.status(404).json({ error: 'Nenhuma URL encontrada no arquivo .txt' });
+        console.warn(`No URL found in file content for ID ${id}: ${content.substring(0, 100)}...`);
+        res.status(404).json({ error: 'Nenhuma URL encontrada no arquivo' });
       }
     } catch (error) {
+      console.error('Error resolving website URL:', error);
       res.status(500).json({ error: 'Erro ao ler arquivo de website' });
     }
   });
@@ -358,6 +445,58 @@ async function startServer() {
       response.data.pipe(res);
     } catch (error) {
       res.status(404).send('File not found');
+    }
+  });
+
+  // Generic stream proxy to bypass CORS and Mixed Content
+  app.get('/api/stream-proxy', async (req, res) => {
+    const streamUrl = req.query.url as string;
+    if (!streamUrl) return res.status(400).send('URL is required');
+
+    try {
+      console.log(`Proxying stream: ${streamUrl}`);
+      const response = await axios({
+        method: 'get',
+        url: streamUrl,
+        responseType: 'stream',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Referer': new URL(streamUrl).origin,
+          'Accept': '*/*',
+          'Connection': 'keep-alive'
+        },
+        timeout: 30000,
+        maxRedirects: 5
+      });
+
+      console.log(`Stream response status: ${response.status}`);
+      console.log(`Stream headers:`, JSON.stringify(response.headers));
+
+      // Forward headers
+      if (response.headers['content-type']) {
+        res.setHeader('Content-Type', response.headers['content-type']);
+      } else {
+        // Force content type for TS streams if missing
+        if (streamUrl.toLowerCase().includes('/ts')) {
+          res.setHeader('Content-Type', 'video/mp2t');
+        }
+      }
+      if (response.headers['content-length']) {
+        res.setHeader('Content-Length', response.headers['content-length']);
+      }
+      if (response.headers['accept-ranges']) {
+        res.setHeader('Accept-Ranges', response.headers['accept-ranges']);
+      }
+
+      response.data.pipe(res);
+      
+      response.data.on('error', (err: any) => {
+        console.error('Proxy stream error:', err.message);
+        if (!res.headersSent) res.status(500).send('Stream error');
+      });
+    } catch (error: any) {
+      console.error('Proxy fetch error:', error.message);
+      res.status(500).send('Failed to fetch stream');
     }
   });
 
