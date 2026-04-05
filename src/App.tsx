@@ -239,7 +239,16 @@ export default function App() {
     if (!input) return '';
     const trimmed = input.trim();
     
-    // If it's a URL, let's keep it as is so the server can resolve it (bit.ly, etc)
+    // Try to extract ID from standard Google Drive URLs immediately
+    const driveMatch = trimmed.match(/folders\/([a-zA-Z0-9_-]{25,})/) || 
+                       trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]{25,})/) ||
+                       trimmed.match(/[?&]id=([a-zA-Z0-9_-]{25,})/);
+    
+    if (driveMatch) {
+      return driveMatch[1];
+    }
+
+    // If it's a URL but not a standard Drive one, let's keep it for the server to resolve (bit.ly, etc)
     if (trimmed.startsWith('http')) {
       return trimmed;
     }

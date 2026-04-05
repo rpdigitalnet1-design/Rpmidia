@@ -49,13 +49,19 @@ async function startServer() {
   // API: List files from Google Drive Folder
   app.get('/api/files', async (req, res) => {
     let folderId = (req.query.folderId as string) || process.env.DRIVE_FOLDER_ID;
+    console.log(`[API] Fetching files for folderId: ${folderId}`);
+    
     if (!folderId) {
       return res.status(400).json({ error: 'DRIVE_FOLDER_ID not set and no folderId provided' });
     }
 
     // Resolve shortened URLs or full URLs if provided
-    if (folderId.startsWith('http')) {
+    if (folderId.includes('http')) {
       try {
+        // Handle cases where the user might have pasted the URL with extra text
+        const urlMatch = folderId.match(/https?:\/\/[^\s]+/);
+        if (urlMatch) folderId = urlMatch[0];
+
         console.log(`Resolving URL: ${folderId}`);
         const resolveResponse = await axios.get(folderId, {
           maxRedirects: 5,
@@ -67,21 +73,23 @@ async function startServer() {
         const finalUrl = resolveResponse.request.res.responseUrl || folderId;
         console.log(`Final resolved URL: ${finalUrl}`);
         
-        // Extract ID from resolved URL
-        const match = finalUrl.match(/folders\/([a-zA-Z0-9_-]+)/);
-        const idMatch = finalUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+        // Extract ID from resolved URL - expanded regex
+        const match = finalUrl.match(/folders\/([a-zA-Z0-9_-]{25,})/) || 
+                     finalUrl.match(/\/file\/d\/([a-zA-Z0-9_-]{25,})/) ||
+                     finalUrl.match(/[?&]id=([a-zA-Z0-9_-]{25,})/);
         
         if (match) {
           folderId = match[1];
-        } else if (idMatch) {
-          folderId = idMatch[1];
+          console.log(`Extracted ID: ${folderId}`);
         } else {
-          // If it's still a URL but no ID found, it might be an invalid Drive link
-          console.error(`Could not extract ID from resolved URL: ${finalUrl}`);
+          // Try one last desperate attempt to find anything that looks like a Drive ID
+          const idOnlyMatch = finalUrl.match(/([a-zA-Z0-9_-]{28,40})/);
+          if (idOnlyMatch) {
+            folderId = idOnlyMatch[1];
+          }
         }
       } catch (err: any) {
         console.error(`Error resolving URL ${folderId}:`, err.message);
-        // Continue with original folderId, maybe it's already an ID
       }
     }
 
@@ -96,6 +104,7 @@ async function startServer() {
       // Try different views in order of reliability
       const views = [
         `https://drive.google.com/embeddedfolderview?id=${folderId}#list`,
+        `https://drive.google.com/embeddedfolderview?id=${folderId}`,
         `https://drive.google.com/drive/folders/${folderId}?usp=sharing`,
         `https://drive.google.com/drive/u/0/mobile/folders/${folderId}`
       ];
@@ -107,11 +116,10 @@ async function startServer() {
           console.log(`Attempting to scrape view: ${viewUrl}`);
           const response = await axios.get(viewUrl, {
             headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
               'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-              'Cache-Control': 'no-cache',
-              'Pragma': 'no-cache'
+              'Cache-Control': 'no-cache'
             },
             timeout: 8000
           });
@@ -191,16 +199,18 @@ async function startServer() {
           // Method 3: Aggressive Regex on the entire HTML
           // Search for patterns like ["ID", "Name.ext"]
           const aggressivePatterns = [
-            /\["([a-zA-Z0-9_-]{25,45})","([^"]+\.[a-zA-Z0-9]{2,4})"/g,
-            /\["([a-zA-Z0-9_-]{25,45})",\["([^"]+\.[a-zA-Z0-9]{2,4})"/g,
-            /"([a-zA-Z0-9_-]{25,45})",\["([^"]+\.[a-zA-Z0-9]{2,4})"/g
+            /\["([a-zA-Z0-9_-]{20,60})","([^"]+\.[a-zA-Z0-9]{2,4})"/g,
+            /\["([a-zA-Z0-9_-]{20,60})",\["([^"]+\.[a-zA-Z0-9]{2,4})"/g,
+            /"([a-zA-Z0-9_-]{20,60})",\["([^"]+\.[a-zA-Z0-9]{2,4})"/g,
+            /id:"([a-zA-Z0-9_-]{20,60})",name:"([^"]+\.[a-zA-Z0-9]{2,4})"/g,
+            /\{"id":"([a-zA-Z0-9_-]{20,60})","name":"([^"]+)"/g
           ];
 
           for (const pattern of aggressivePatterns) {
             let match;
             while ((match = pattern.exec(html)) !== null) {
               const id = match[1];
-              const name = match[2];
+              const name = match[2].replace(/\\u002e/g, '.'); // Fix escaped dots
               if (id && name && !files.find(f => f.id === id)) {
                 const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
                 const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
@@ -223,6 +233,44 @@ async function startServer() {
                   });
                 }
               }
+            }
+          }
+
+          // Method 4: AF_initDataCallback parsing (Modern Drive structure)
+          if (files.length === 0) {
+            const initDataMatches = html.match(/AF_initDataCallback\(\{key: 'ds:1'[^}]+\}\);/g);
+            if (initDataMatches) {
+              initDataMatches.forEach(match => {
+                // Extract the data array part
+                const dataMatch = match.match(/data:(\[.*\])\}\);$/);
+                if (dataMatch) {
+                  try {
+                    const data = JSON.parse(dataMatch[1]);
+                    // Recursively find IDs and names in the nested array
+                    const findFiles = (arr: any) => {
+                      if (!Array.isArray(arr)) return;
+                      if (arr.length >= 2 && typeof arr[0] === 'string' && arr[0].length >= 25 && typeof arr[1] === 'string' && arr[1].includes('.')) {
+                        const id = arr[0];
+                        const name = arr[1];
+                        if (!files.find(f => f.id === id)) {
+                          const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
+                          const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
+                          const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(name);
+                          if (isVideo || isImage || isAudio) {
+                            files.push({
+                              id, name, isVideo, isAudio, isWebsite: false,
+                              thumbnail: isAudio ? `https://cdn-icons-png.flaticon.com/512/3083/3083417.png` : `https://drive.google.com/thumbnail?id=${id}&sz=w1000`,
+                              url: `/api/proxy/${id}`
+                            });
+                          }
+                        }
+                      }
+                      arr.forEach(item => findFiles(item));
+                    };
+                    findFiles(data);
+                  } catch (e) {}
+                }
+              });
             }
           }
 
