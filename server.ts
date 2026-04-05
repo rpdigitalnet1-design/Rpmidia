@@ -48,7 +48,7 @@ async function startServer() {
 
   // API: List files from Google Drive Folder
   app.get('/api/files', async (req, res) => {
-    let folderId = (req.query.folderId as string) || process.env.DRIVE_FOLDER_ID;
+    let folderId = (req.query.folderId as string) || process.env.DRIVE_FOLDER_ID || '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR';
     console.log(`[API] Fetching files for folderId: ${folderId}`);
     
     if (!folderId) {
@@ -125,11 +125,16 @@ async function startServer() {
           });
 
           const html = response.data;
-          if (typeof html !== 'string') continue;
+          if (typeof html !== 'string') {
+            console.log(`[Scraper] View ${viewUrl} returned non-string data`);
+            continue;
+          }
+          
+          console.log(`[Scraper] Fetched HTML for ${viewUrl}, length: ${html.length}`);
 
           // Check if we are being redirected to login
           if (html.includes('signin') || html.includes('login') || html.includes('ServiceLogin')) {
-            console.log(`View ${viewUrl} redirected to login or requires auth.`);
+            console.log(`[Scraper] View ${viewUrl} redirected to login or requires auth.`);
             continue;
           }
 
@@ -238,24 +243,31 @@ async function startServer() {
 
           // Method 4: AF_initDataCallback parsing (Modern Drive structure)
           if (files.length === 0) {
-            const initDataMatches = html.match(/AF_initDataCallback\(\{key: 'ds:1'[^}]+\}\);/g);
+            const initDataMatches = html.match(/AF_initDataCallback\(\{key: 'ds:[^']+'[^}]+\}\);/g);
             if (initDataMatches) {
               initDataMatches.forEach(match => {
-                // Extract the data array part
-                const dataMatch = match.match(/data:(\[.*\])\}\);$/);
+                // Extract the data array part - more flexible regex
+                const dataMatch = match.match(/data:(\[.*\])\s*\}\);/);
                 if (dataMatch) {
                   try {
                     const data = JSON.parse(dataMatch[1]);
                     // Recursively find IDs and names in the nested array
                     const findFiles = (arr: any) => {
                       if (!Array.isArray(arr)) return;
-                      if (arr.length >= 2 && typeof arr[0] === 'string' && arr[0].length >= 25 && typeof arr[1] === 'string' && arr[1].includes('.')) {
+                      
+                      // Check for [ID, Name, ...] pattern
+                      if (arr.length >= 2 && 
+                          typeof arr[0] === 'string' && arr[0].length >= 25 && arr[0].length <= 50 &&
+                          typeof arr[1] === 'string' && arr[1].includes('.') && arr[1].length < 255) {
+                        
                         const id = arr[0];
-                        const name = arr[1];
+                        const name = arr[1].replace(/\\u002e/g, '.');
+                        
                         if (!files.find(f => f.id === id)) {
                           const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
                           const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
                           const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(name);
+                          
                           if (isVideo || isImage || isAudio) {
                             files.push({
                               id, name, isVideo, isAudio, isWebsite: false,
@@ -271,6 +283,30 @@ async function startServer() {
                   } catch (e) {}
                 }
               });
+            }
+          }
+
+          // Method 5: Extreme Regex - find any ID-like string near a filename-like string
+          if (files.length === 0) {
+            // This regex looks for an ID, then some characters (up to 100), then a filename
+            const extremeRegex = /"([a-zA-Z0-9_-]{25,50})"[^"]{1,100}"([^"]+\.(?:jpg|jpeg|png|gif|mp4|webm|mov|avi|mkv|mp3|wav|ogg|m4a))"/gi;
+            let match;
+            while ((match = extremeRegex.exec(html)) !== null) {
+              const id = match[1];
+              const name = match[2].replace(/\\u002e/g, '.');
+              if (id && name && !files.find(f => f.id === id)) {
+                const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(name);
+                const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
+                const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(name);
+                
+                if (isVideo || isImage || isAudio) {
+                  files.push({
+                    id, name, isVideo, isAudio, isWebsite: false,
+                    thumbnail: isAudio ? `https://cdn-icons-png.flaticon.com/512/3083/3083417.png` : `https://drive.google.com/thumbnail?id=${id}&sz=w1000`,
+                    url: `/api/proxy/${id}`
+                  });
+                }
+              }
             }
           }
 

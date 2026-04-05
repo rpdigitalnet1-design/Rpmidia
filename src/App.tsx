@@ -204,13 +204,14 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('app_settings');
+    const defaultFolderId = import.meta.env.VITE_DRIVE_FOLDER_ID || '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR';
     const defaultSettings: AppSettings = {
       displayMode: 'fill',
       orientation: 'horizontal',
       slideDuration: 5000,
       websiteDuration: 30000,
       autoStart: false,
-      driveFolderId: import.meta.env.VITE_DRIVE_FOLDER_ID || '',
+      driveFolderId: defaultFolderId,
       isMuted: false,
       syncInterval: 30000,
       websiteRefreshInterval: 0,
@@ -219,6 +220,10 @@ export default function App() {
     
     if (saved) {
       const parsed = JSON.parse(saved);
+      // If the saved folderId is empty, use the default one
+      if (!parsed.driveFolderId) {
+        parsed.driveFolderId = defaultFolderId;
+      }
       return { ...defaultSettings, ...parsed };
     }
     return defaultSettings;
@@ -235,11 +240,22 @@ export default function App() {
 
   const [folderInput, setFolderInput] = useState(settings.driveFolderId);
 
+  useEffect(() => {
+    if (showSettings) {
+      // If the current ID matches the default one, let's show the full URL as an example
+      if (settings.driveFolderId === '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR') {
+        setFolderInput('https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR');
+      } else {
+        setFolderInput(settings.driveFolderId);
+      }
+    }
+  }, [showSettings, settings.driveFolderId]);
+
   const extractFolderId = (input: string) => {
     if (!input) return '';
     const trimmed = input.trim();
     
-    // Try to extract ID from standard Google Drive URLs immediately
+    // Try to extract ID from standard Google Drive URLs
     const driveMatch = trimmed.match(/folders\/([a-zA-Z0-9_-]{25,})/) || 
                        trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]{25,})/) ||
                        trimmed.match(/[?&]id=([a-zA-Z0-9_-]{25,})/);
@@ -1184,6 +1200,11 @@ export default function App() {
                   localStorage.setItem('app_settings', JSON.stringify(newSettings));
                   setShowSettings(false);
                   setIsLoading(true); // Trigger reload
+                  
+                  // If the user pasted a URL, let's keep it in the input for next time they open settings
+                  // but the settings.driveFolderId will have the extracted ID
+                  setFolderInput(folderInput);
+                  
                   fetchFiles();
                 }}
                 className="w-full bg-blue-600 mt-4 py-3 rounded-xl font-bold text-sm"
