@@ -204,7 +204,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('app_settings');
-    const defaultFolderId = import.meta.env.VITE_DRIVE_FOLDER_ID || '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR';
+    const defaultFolderId = import.meta.env.VITE_DRIVE_FOLDER_ID || 'https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR?usp=sharing';
     const defaultSettings: AppSettings = {
       displayMode: 'fill',
       orientation: 'horizontal',
@@ -551,10 +551,13 @@ export default function App() {
 
   useEffect(() => {
     if (!isPlaying || settings.appRefreshInterval <= 0) return;
+    
+    // Minimum 30 seconds to prevent infinite reload loops
+    const intervalTime = Math.max(settings.appRefreshInterval, 30000);
 
     const interval = setInterval(() => {
       window.location.reload();
-    }, settings.appRefreshInterval);
+    }, intervalTime);
 
     return () => clearInterval(interval);
   }, [isPlaying, settings.appRefreshInterval]);
@@ -672,14 +675,17 @@ export default function App() {
   }, [currentFile]);
 
   useEffect(() => {
-    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval < 5000 || currentFile.isStream) return;
+    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval <= 0 || currentFile.isStream) return;
+    
+    // Minimum 10 seconds for website refresh
+    const intervalTime = Math.max(settings.websiteRefreshInterval, 10000);
 
     const interval = setInterval(() => {
       // Re-fetch the URL from the server silently
       fetchWebsiteUrl(true);
       // Also increment key to force iframe reload
       setWebsiteKey(prev => prev + 1);
-    }, settings.websiteRefreshInterval);
+    }, intervalTime);
 
     return () => clearInterval(interval);
   }, [isPlaying, currentFile, settings.websiteRefreshInterval, fetchWebsiteUrl]);
@@ -952,34 +958,63 @@ export default function App() {
         >
           <h1 className="text-5xl font-bold mb-4 tracking-tight text-blue-500">RP Midia Indoor</h1>
           
-          <div className="flex gap-4 justify-center items-center">
-            <button 
-              onClick={startPlayer}
-              disabled={files.length === 0}
-              className={`flex items-center gap-2 px-8 py-4 rounded-full text-xl font-bold transition-all transform shadow-lg ${
-                files.length > 0 
-                ? "bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 active:scale-95 shadow-blue-900/20" 
-                : "bg-neutral-700 text-neutral-500 cursor-not-allowed"
-              }`}
-            >
-              {isFetching && files.length === 0 ? (
-                <>
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                  CARREGANDO...
-                </>
-              ) : (
-                <>
-                  <Play className="fill-current" /> INICIAR
-                </>
-              )}
-            </button>
-            <button 
-              onClick={() => setShowSettings(true)}
-              className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-8 py-4 rounded-full text-xl font-bold transition-all"
-            >
-              <Settings /> CONFIGS
-            </button>
-            {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
+          <div className="flex flex-col gap-4 justify-center items-center">
+            {files.length === 0 && (
+              <div className="w-full max-w-md mb-4">
+                <label className="block text-xs text-neutral-400 mb-1 text-left">URL da Pasta do Google Drive</label>
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    placeholder="Cole o link da pasta pública aqui..."
+                    value={folderInput}
+                    onChange={(e) => setFolderInput(e.target.value)}
+                    className="flex-1 bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                  <button 
+                    onClick={() => {
+                      const extractedId = extractFolderId(folderInput);
+                      const newSettings = { ...settings, driveFolderId: extractedId };
+                      setSettings(newSettings);
+                      localStorage.setItem('app_settings', JSON.stringify(newSettings));
+                      fetchFiles();
+                    }}
+                    className="bg-blue-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all"
+                  >
+                    ATUALIZAR
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            <div className="flex gap-4 justify-center items-center">
+              <button 
+                onClick={startPlayer}
+                disabled={files.length === 0}
+                className={`flex items-center gap-2 px-8 py-4 rounded-full text-xl font-bold transition-all transform shadow-lg ${
+                  files.length > 0 
+                  ? "bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 active:scale-95 shadow-blue-900/20" 
+                  : "bg-neutral-700 text-neutral-500 cursor-not-allowed"
+                }`}
+              >
+                {isFetching && files.length === 0 ? (
+                  <>
+                    <Loader2 className="w-6 h-6 animate-spin" />
+                    CARREGANDO...
+                  </>
+                ) : (
+                  <>
+                    <Play className="fill-current" /> INICIAR
+                  </>
+                )}
+              </button>
+              <button 
+                onClick={() => setShowSettings(true)}
+                className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-8 py-4 rounded-full text-xl font-bold transition-all"
+              >
+                <Settings /> CONFIGS
+              </button>
+              {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
+            </div>
           </div>
 
           {files.length === 0 && settings.driveFolderId && !isFetching && (
