@@ -15,8 +15,12 @@ async function startServer() {
   const PORT = 3000;
   const CACHE_DIR = path.join(__dirname, 'cache');
 
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR);
+  try {
+    if (!fs.existsSync(CACHE_DIR)) {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+    }
+  } catch (err) {
+    console.warn('Could not create cache directory, caching will be disabled:', err);
   }
 
   app.use(cors());
@@ -25,9 +29,11 @@ async function startServer() {
   // API: Clear cache
   app.post('/api/cache/clear', (req, res) => {
     try {
-      fs.readdirSync(CACHE_DIR).forEach(file => {
-        fs.unlinkSync(path.join(CACHE_DIR, file));
-      });
+      if (fs.existsSync(CACHE_DIR)) {
+        fs.readdirSync(CACHE_DIR).forEach(file => {
+          fs.unlinkSync(path.join(CACHE_DIR, file));
+        });
+      }
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Failed to clear cache' });
@@ -107,7 +113,7 @@ async function startServer() {
               'Cache-Control': 'no-cache',
               'Pragma': 'no-cache'
             },
-            timeout: 15000
+            timeout: 8000
           });
 
           const html = response.data;

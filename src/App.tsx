@@ -5,7 +5,7 @@ import { DriveFile, AppSettings, DisplayMode } from './types';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 
-const StreamPlayer = ({ url, isMuted }: { url: string; isMuted: boolean }) => {
+const StreamPlayer = ({ url, isMuted, onEnded }: { url: string; isMuted: boolean; onEnded?: () => void }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +29,9 @@ const StreamPlayer = ({ url, isMuted }: { url: string; isMuted: boolean }) => {
     };
 
     video.addEventListener('playing', handlePlay);
+    if (onEnded) {
+      video.addEventListener('ended', onEnded);
+    }
 
     const startPlayback = () => {
       setLoading(false);
@@ -132,6 +135,9 @@ const StreamPlayer = ({ url, isMuted }: { url: string; isMuted: boolean }) => {
     return () => {
       if (playTimeout) clearTimeout(playTimeout);
       video.removeEventListener('playing', handlePlay);
+      if (onEnded) {
+        video.removeEventListener('ended', onEnded);
+      }
       if (hls) hls.destroy();
       if (tsPlayer) {
         tsPlayer.pause();
@@ -189,6 +195,8 @@ export default function App() {
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [audioFiles, setAudioFiles] = useState<DriveFile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [nextIndex, setNextIndex] = useState<number | null>(null);
+  const [isNextReady, setIsNextReady] = useState(false);
   const [currentAudioIndex, setCurrentAudioIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -202,7 +210,7 @@ export default function App() {
       slideDuration: 5000,
       websiteDuration: 30000,
       autoStart: false,
-      driveFolderId: '',
+      driveFolderId: import.meta.env.VITE_DRIVE_FOLDER_ID || '',
       isMuted: false,
       syncInterval: 30000,
       websiteRefreshInterval: 0,
@@ -315,8 +323,50 @@ export default function App() {
 
   const nextSlide = useCallback(() => {
     if (files.length === 0) return;
-    setCurrentIndex(prev => (prev + 1) % files.length);
-  }, [files.length]);
+    const nextIdx = (currentIndex + 1) % files.length;
+    setNextIndex(nextIdx);
+    setIsNextReady(false);
+  }, [files.length, currentIndex]);
+
+  // Handle media ready state for next slide
+  useEffect(() => {
+    if (nextIndex === null) return;
+    
+    const nextFile = files[nextIndex];
+    if (!nextFile) {
+      setNextIndex(null);
+      return;
+    }
+
+    // If it's a website or YouTube, we consider it "ready" immediately to avoid hanging,
+    // but for images and videos we wait for actual load
+    if (nextFile.isWebsite || nextFile.isYouTube) {
+      setIsNextReady(true);
+      return;
+    }
+
+    if (nextFile.isVideo) {
+      const video = document.createElement('video');
+      video.src = nextFile.url;
+      video.preload = 'auto';
+      video.oncanplaythrough = () => setIsNextReady(true);
+      video.onerror = () => setIsNextReady(true); // Continue on error
+    } else {
+      const img = new Image();
+      img.src = nextFile.url;
+      img.onload = () => setIsNextReady(true);
+      img.onerror = () => setIsNextReady(true); // Continue on error
+    }
+  }, [nextIndex, files]);
+
+  // Perform the actual switch when next is ready
+  useEffect(() => {
+    if (nextIndex !== null && isNextReady) {
+      setCurrentIndex(nextIndex);
+      setNextIndex(null);
+      setIsNextReady(false);
+    }
+  }, [nextIndex, isNextReady]);
 
   const nextAudio = useCallback(() => {
     if (audioFiles.length === 0) return;
@@ -337,7 +387,7 @@ export default function App() {
   }, [audioFiles.length, currentAudioIndex]);
 
   useEffect(() => {
-    if (!isPlaying || files.length === 0) return;
+    if (!isPlaying || files.length === 0 || nextIndex !== null) return;
 
     const currentFile = files[currentIndex];
     if (!currentFile) {
@@ -364,7 +414,7 @@ export default function App() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPlaying, currentIndex, files, settings.slideDuration, settings.websiteDuration, nextSlide]);
+  }, [isPlaying, currentIndex, nextIndex, files, settings.slideDuration, settings.websiteDuration, nextSlide]);
 
   // Check if current stream file still exists in Drive
   useEffect(() => {
@@ -887,7 +937,16 @@ export default function App() {
                 : "bg-neutral-700 text-neutral-500 cursor-not-allowed"
               }`}
             >
-              <Play className="fill-current" /> INICIAR PLAYER
+              {isFetching && files.length === 0 ? (
+                <>
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                  CARREGANDO...
+                </>
+              ) : (
+                <>
+                  <Play className="fill-current" /> INICIAR
+                </>
+              )}
             </button>
             <button 
               onClick={() => setShowSettings(true)}
@@ -898,13 +957,17 @@ export default function App() {
             {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
           </div>
 
-          {files.length === 0 && settings.driveFolderId && (
-            <button 
-              onClick={() => { setIsLoading(true); fetchFiles(); }}
-              className="mt-6 text-blue-400 hover:text-blue-300 text-sm underline"
-            >
-              Tentar novamente agora
-            </button>
+          {files.length === 0 && settings.driveFolderId && !isFetching && (
+            <div className="mt-8 p-4 bg-red-900/20 border border-red-900/30 rounded-2xl text-red-400 text-sm">
+              <p className="font-bold mb-1">Nenhum arquivo encontrado!</p>
+              <p className="opacity-80">Verifique se a pasta do Google Drive é <strong>PÚBLICA</strong> (Qualquer pessoa com o link pode ver) e se contém imagens ou vídeos.</p>
+              <button 
+                onClick={() => { setIsLoading(true); fetchFiles(); }}
+                className="mt-4 px-4 py-2 bg-red-900/40 hover:bg-red-900/60 rounded-lg text-xs font-bold transition-all underline"
+              >
+                Tentar novamente agora
+              </button>
+            </div>
           )}
         </motion.div>
 
@@ -1125,6 +1188,105 @@ export default function App() {
     );
   }
 
+  const renderFile = (file: DriveFile, isPreload: boolean) => {
+    if (file.isVideo) {
+      return (
+        <div className="relative w-full h-full">
+          <video
+            ref={isPreload ? undefined : videoRef}
+            src={file.url}
+            autoPlay={!isPreload}
+            muted={settings.isMuted}
+            playsInline
+            onEnded={isPreload ? undefined : nextSlide}
+            onLoadedData={() => {
+              if (!isPreload && videoRef.current) {
+                videoRef.current.play().catch(err => {
+                  console.log("Autoplay blocked, user interaction needed", err);
+                });
+              }
+            }}
+            onError={(e) => {
+              if (!isPreload) {
+                console.error('Video error:', e);
+                setTimeout(nextSlide, 2000);
+              }
+            }}
+            className="w-full h-full"
+            style={{ objectFit: getObjectFit() as any }}
+          />
+        </div>
+      );
+    } else if (file.isWebsite) {
+      return (
+        <div className="w-full h-full bg-white relative">
+          {websiteUrl ? (
+            file.isStream ? (
+              file.isYouTube ? (
+                <div className="w-full h-full relative group">
+                  <iframe 
+                    id={isPreload ? undefined : "youtube-player"}
+                    key={websiteKey}
+                    src={websiteUrl} 
+                    className="w-full h-full border-none"
+                    title={file.name}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                  />
+                  {!isPreload && (
+                    <div 
+                      className="absolute inset-0 z-10 cursor-none bg-transparent"
+                      onClick={() => {
+                        console.log('Overlay clicked, forcing YouTube play/unmute');
+                        if (ytPlayerRef.current) {
+                          ytPlayerRef.current.unMute();
+                          ytPlayerRef.current.setVolume(100);
+                          ytPlayerRef.current.playVideo();
+                        }
+                        const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
+                        if (iframe && iframe.contentWindow) {
+                          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unMute' }), '*');
+                          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo' }), '*');
+                        }
+                      }}
+                    />
+                  )}
+                </div>
+              ) : (
+                <StreamPlayer 
+                  url={websiteUrl} 
+                  isMuted={settings.isMuted} 
+                  onEnded={isPreload ? undefined : nextSlide}
+                />
+              )
+            ) : (
+              <iframe 
+                key={websiteKey}
+                src={websiteUrl} 
+                className="w-full h-full border-none"
+                title={file.name}
+                onError={() => !isPreload && setWebsiteError('Erro ao carregar site')}
+              />
+            )
+          ) : (
+            <div className="flex items-center justify-center h-full text-neutral-500">
+              {websiteError || 'Carregando site...'}
+            </div>
+          )}
+        </div>
+      );
+    } else {
+      return (
+        <img
+          src={file.url}
+          alt={file.name}
+          className="w-full h-full"
+          style={{ objectFit: getObjectFit() as any }}
+          referrerPolicy="no-referrer"
+        />
+      );
+    }
+  };
+
   const getOrientationStyles = (): CSSProperties => {
     if (settings.orientation === 'vertical') {
       return {
@@ -1155,114 +1317,22 @@ export default function App() {
       />
       
       <div style={getOrientationStyles()}>
+        {/* Render Next File behind current one to pre-warm it */}
+        {nextIndex !== null && files[nextIndex] && (
+          <div
+            key={`next-${files[nextIndex].id}`}
+            className="absolute inset-0 flex items-center justify-center bg-black z-0 opacity-0"
+          >
+            {renderFile(files[nextIndex], true)}
+          </div>
+        )}
+
         {currentFile && (
           <div
             key={currentFile.id}
-            className="absolute inset-0 flex items-center justify-center bg-black"
+            className="absolute inset-0 flex items-center justify-center bg-black z-10"
           >
-            {currentFile.isVideo ? (
-              <div className="relative w-full h-full">
-                <video
-                  ref={videoRef}
-                  src={currentFile.url}
-                  autoPlay
-                  muted={settings.isMuted}
-                  playsInline
-                  onEnded={nextSlide}
-                  onLoadedData={() => {
-                    if (videoRef.current) {
-                      videoRef.current.play().catch(err => {
-                        console.log("Autoplay blocked, user interaction needed", err);
-                      });
-                    }
-                  }}
-                  onError={(e) => {
-                    console.error('Video error:', e);
-                    setTimeout(nextSlide, 2000);
-                  }}
-                  className="w-full h-full"
-                  style={{ objectFit: getObjectFit() as any }}
-                />
-              </div>
-            ) : currentFile.isWebsite ? (
-              <div className="w-full h-full bg-white relative">
-                {websiteUrl ? (
-                  currentFile.isStream ? (
-                    currentFile.isYouTube ? (
-                      <div className="w-full h-full relative group">
-                        <iframe 
-                          id="youtube-player"
-                          key={websiteKey}
-                          src={websiteUrl} 
-                          className="w-full h-full border-none"
-                          title={currentFile.name}
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                        />
-                        {/* Transparent overlay to capture clicks and trigger sound/play if blocked */}
-                        <div 
-                          className="absolute inset-0 z-10 cursor-none bg-transparent"
-                          onClick={() => {
-                            console.log('Overlay clicked, forcing YouTube play/unmute');
-                            if (ytPlayerRef.current) {
-                              try {
-                                ytPlayerRef.current.unMute();
-                                ytPlayerRef.current.setVolume(100);
-                                ytPlayerRef.current.playVideo();
-                              } catch (e) {}
-                            }
-                            // Fallback postMessage
-                            const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
-                            iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
-                            iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*');
-                            iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
-                          }}
-                        />
-                      </div>
-                    ) : (
-                      <StreamPlayer url={websiteUrl} isMuted={settings.isMuted} />
-                    )
-                  ) : (
-                    <iframe 
-                      key={websiteKey}
-                      src={websiteUrl} 
-                      className="w-full h-full border-none"
-                      title={currentFile.name}
-                      allow="autoplay; fullscreen"
-                      referrerPolicy="no-referrer"
-                    />
-                  )
-                ) : websiteError ? (
-                  <div className="flex flex-col items-center justify-center h-full text-neutral-500 p-8 text-center gap-4">
-                    <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center">
-                      <X className="w-8 h-8 text-red-500" />
-                    </div>
-                    <div>
-                      <p className="text-lg font-bold text-neutral-800">Erro ao carregar</p>
-                      <p className="text-sm text-neutral-500 mt-1">{websiteError}</p>
-                    </div>
-                    <button 
-                      onClick={() => fetchWebsiteUrl()}
-                      className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-sm font-medium transition-colors"
-                    >
-                      Tentar novamente
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <img
-                src={currentFile.url}
-                alt={currentFile.name}
-                className="w-full h-full pointer-events-none select-none"
-                style={{ objectFit: getObjectFit() as any }}
-                referrerPolicy="no-referrer"
-              />
-            )}
-
-            {/* Overlay for file name (optional, can be hidden) */}
-            <div className="absolute top-4 left-4 bg-black/50 backdrop-blur-md px-4 py-2 rounded-lg text-white text-sm font-medium opacity-0 hover:opacity-100 transition-opacity">
-              {currentFile.name}
-            </div>
+            {renderFile(currentFile, false)}
           </div>
         )}
       </div>
