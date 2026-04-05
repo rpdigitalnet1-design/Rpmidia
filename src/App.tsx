@@ -204,7 +204,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('app_settings');
-    const defaultFolderId = import.meta.env.VITE_DRIVE_FOLDER_ID || 'https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR?usp=sharing';
+    const defaultFolderId = 'https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR?usp=sharing';
     const defaultSettings: AppSettings = {
       displayMode: 'fill',
       orientation: 'horizontal',
@@ -219,21 +219,19 @@ export default function App() {
     };
     
     if (saved) {
-      const parsed = JSON.parse(saved);
-      // If the saved folderId is empty, use the default one
-      if (!parsed.driveFolderId) {
-        parsed.driveFolderId = defaultFolderId;
+      try {
+        const parsed = JSON.parse(saved);
+        // If the saved folderId is empty or looks like an API key, use the default one
+        if (!parsed.driveFolderId || parsed.driveFolderId.startsWith('AIzaSy')) {
+          parsed.driveFolderId = defaultFolderId;
+        }
+        return { ...defaultSettings, ...parsed };
+      } catch (e) {
+        return defaultSettings;
       }
-      return { ...defaultSettings, ...parsed };
     }
     return defaultSettings;
   });
-
-  useEffect(() => {
-    if (showSettings) {
-      setFolderInput(settings.driveFolderId);
-    }
-  }, [showSettings, settings.driveFolderId]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -243,7 +241,9 @@ export default function App() {
   useEffect(() => {
     if (showSettings) {
       // If the current ID matches the default one, let's show the full URL as an example
-      if (settings.driveFolderId === '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR') {
+      if (settings.driveFolderId === '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR' || settings.driveFolderId.includes('1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR')) {
+        setFolderInput('https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR');
+      } else if (settings.driveFolderId.startsWith('AIzaSy')) {
         setFolderInput('https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR');
       } else {
         setFolderInput(settings.driveFolderId);
@@ -550,7 +550,7 @@ export default function App() {
   const currentFile = files[currentIndex];
 
   useEffect(() => {
-    if (!isPlaying || settings.appRefreshInterval <= 0) return;
+    if (!isPlaying || settings.appRefreshInterval <= 0 || showSettings) return;
     
     // Minimum 30 seconds to prevent infinite reload loops
     const intervalTime = Math.max(settings.appRefreshInterval, 30000);
@@ -560,7 +560,7 @@ export default function App() {
     }, intervalTime);
 
     return () => clearInterval(interval);
-  }, [isPlaying, settings.appRefreshInterval]);
+  }, [isPlaying, settings.appRefreshInterval, showSettings]);
 
   const [websiteUrl, setWebsiteUrl] = useState<string | null>(null);
   const [websiteKey, setWebsiteKey] = useState(0);
@@ -675,7 +675,7 @@ export default function App() {
   }, [currentFile]);
 
   useEffect(() => {
-    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval <= 0 || currentFile.isStream) return;
+    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval <= 0 || currentFile.isStream || showSettings) return;
     
     // Minimum 10 seconds for website refresh
     const intervalTime = Math.max(settings.websiteRefreshInterval, 10000);
@@ -688,7 +688,7 @@ export default function App() {
     }, intervalTime);
 
     return () => clearInterval(interval);
-  }, [isPlaying, currentFile, settings.websiteRefreshInterval, fetchWebsiteUrl]);
+  }, [isPlaying, currentFile, settings.websiteRefreshInterval, fetchWebsiteUrl, showSettings]);
 
   useEffect(() => {
     if (!isPlaying || !currentFile || !currentFile.isWebsite) {
@@ -958,63 +958,34 @@ export default function App() {
         >
           <h1 className="text-5xl font-bold mb-4 tracking-tight text-blue-500">RP Midia Indoor</h1>
           
-          <div className="flex flex-col gap-4 justify-center items-center">
-            {files.length === 0 && (
-              <div className="w-full max-w-md mb-4">
-                <label className="block text-xs text-neutral-400 mb-1 text-left">URL da Pasta do Google Drive</label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text"
-                    placeholder="Cole o link da pasta pública aqui..."
-                    value={folderInput}
-                    onChange={(e) => setFolderInput(e.target.value)}
-                    className="flex-1 bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                  />
-                  <button 
-                    onClick={() => {
-                      const extractedId = extractFolderId(folderInput);
-                      const newSettings = { ...settings, driveFolderId: extractedId };
-                      setSettings(newSettings);
-                      localStorage.setItem('app_settings', JSON.stringify(newSettings));
-                      fetchFiles();
-                    }}
-                    className="bg-blue-600 px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all"
-                  >
-                    ATUALIZAR
-                  </button>
-                </div>
-              </div>
-            )}
-            
-            <div className="flex gap-4 justify-center items-center">
-              <button 
-                onClick={startPlayer}
-                disabled={files.length === 0}
-                className={`flex items-center gap-2 px-8 py-4 rounded-full text-xl font-bold transition-all transform shadow-lg ${
-                  files.length > 0 
-                  ? "bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 active:scale-95 shadow-blue-900/20" 
-                  : "bg-neutral-700 text-neutral-500 cursor-not-allowed"
-                }`}
-              >
-                {isFetching && files.length === 0 ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    CARREGANDO...
-                  </>
-                ) : (
-                  <>
-                    <Play className="fill-current" /> INICIAR
-                  </>
-                )}
-              </button>
-              <button 
-                onClick={() => setShowSettings(true)}
-                className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-8 py-4 rounded-full text-xl font-bold transition-all"
-              >
-                <Settings /> CONFIGS
-              </button>
-              {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
-            </div>
+          <div className="flex gap-4 justify-center items-center">
+            <button 
+              onClick={startPlayer}
+              disabled={files.length === 0}
+              className={`flex items-center gap-2 px-8 py-4 rounded-full text-xl font-bold transition-all transform shadow-lg ${
+                files.length > 0 
+                ? "bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 active:scale-95 shadow-blue-900/20" 
+                : "bg-neutral-700 text-neutral-500 cursor-not-allowed"
+              }`}
+            >
+              {isFetching && files.length === 0 ? (
+                <>
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                  CARREGANDO...
+                </>
+              ) : (
+                <>
+                  <Play className="fill-current" /> INICIAR
+                </>
+              )}
+            </button>
+            <button 
+              onClick={() => setShowSettings(true)}
+              className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-8 py-4 rounded-full text-xl font-bold transition-all"
+            >
+              <Settings /> CONFIGS
+            </button>
+            {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
           </div>
 
           {files.length === 0 && settings.driveFolderId && !isFetching && (
@@ -1045,8 +1016,18 @@ export default function App() {
                   <textarea 
                     placeholder="Cole o link da pasta pública aqui..."
                     value={folderInput}
-                    onChange={(e) => setFolderInput(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val.trim().startsWith('AIzaSy')) {
+                        alert('Ops! Parece que você colou uma chave API. Por favor, cole o link da pasta do Google Drive.');
+                        return;
+                      }
+                      setFolderInput(val);
+                    }}
                     rows={2}
+                    autoComplete="off"
+                    data-lpignore="true"
+                    spellCheck="false"
                     className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm resize-none break-all"
                   />
                 </div>
@@ -1125,6 +1106,7 @@ export default function App() {
                     <input 
                       type="number"
                       min="1"
+                      autoComplete="off"
                       value={settings.slideDuration / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1141,6 +1123,7 @@ export default function App() {
                     <input 
                       type="number"
                       min="1"
+                      autoComplete="off"
                       value={settings.websiteDuration / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1157,6 +1140,7 @@ export default function App() {
                     <input 
                       type="number"
                       min="10"
+                      autoComplete="off"
                       value={settings.syncInterval / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1173,6 +1157,7 @@ export default function App() {
                     <input 
                       type="number"
                       min="0"
+                      autoComplete="off"
                       value={settings.websiteRefreshInterval / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1189,6 +1174,7 @@ export default function App() {
                     <input 
                       type="number"
                       min="0"
+                      autoComplete="off"
                       value={settings.appRefreshInterval / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
