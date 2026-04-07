@@ -5,7 +5,7 @@ import { DriveFile, AppSettings, DisplayMode } from './types';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
 
-const StreamPlayer = ({ url, isMuted, onEnded }: { url: string; isMuted: boolean; onEnded?: () => void }) => {
+const StreamPlayer = ({ url, isMuted }: { url: string; isMuted: boolean }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,9 +29,6 @@ const StreamPlayer = ({ url, isMuted, onEnded }: { url: string; isMuted: boolean
     };
 
     video.addEventListener('playing', handlePlay);
-    if (onEnded) {
-      video.addEventListener('ended', onEnded);
-    }
 
     const startPlayback = () => {
       setLoading(false);
@@ -48,8 +45,6 @@ const StreamPlayer = ({ url, isMuted, onEnded }: { url: string; isMuted: boolean
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
-        maxBufferLength: 60, // Increase buffer for smoother playback and offline resilience
-        maxMaxBufferLength: 120,
       });
       hls.loadSource(url);
       hls.attachMedia(video);
@@ -78,8 +73,8 @@ const StreamPlayer = ({ url, isMuted, onEnded }: { url: string; isMuted: boolean
         cors: true,
         withCredentials: false
       }, {
-        enableStashBuffer: true, // Enable stash buffer
-        stashInitialSize: 1024, // Increase initial stash size (1MB)
+        enableStashBuffer: false,
+        stashInitialSize: 128,
         isLive: true,
         lazyLoad: false
       });
@@ -135,9 +130,6 @@ const StreamPlayer = ({ url, isMuted, onEnded }: { url: string; isMuted: boolean
     return () => {
       if (playTimeout) clearTimeout(playTimeout);
       video.removeEventListener('playing', handlePlay);
-      if (onEnded) {
-        video.removeEventListener('ended', onEnded);
-      }
       if (hls) hls.destroy();
       if (tsPlayer) {
         tsPlayer.pause();
@@ -195,8 +187,6 @@ export default function App() {
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [audioFiles, setAudioFiles] = useState<DriveFile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [nextIndex, setNextIndex] = useState<number | null>(null);
-  const [isNextReady, setIsNextReady] = useState(false);
   const [currentAudioIndex, setCurrentAudioIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -204,14 +194,13 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('app_settings');
-    const defaultFolderId = 'https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR?usp=sharing';
     const defaultSettings: AppSettings = {
       displayMode: 'fill',
       orientation: 'horizontal',
       slideDuration: 5000,
       websiteDuration: 30000,
       autoStart: false,
-      driveFolderId: defaultFolderId,
+      driveFolderId: '',
       isMuted: false,
       syncInterval: 30000,
       websiteRefreshInterval: 0,
@@ -219,52 +208,28 @@ export default function App() {
     };
     
     if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // If the saved folderId is empty or looks like an API key, use the default one
-        if (!parsed.driveFolderId || parsed.driveFolderId.startsWith('AIzaSy')) {
-          parsed.driveFolderId = defaultFolderId;
-        }
-        return { ...defaultSettings, ...parsed };
-      } catch (e) {
-        return defaultSettings;
-      }
+      const parsed = JSON.parse(saved);
+      return { ...defaultSettings, ...parsed };
     }
     return defaultSettings;
   });
+
+  useEffect(() => {
+    if (showSettings) {
+      setFolderInput(settings.driveFolderId);
+    }
+  }, [showSettings, settings.driveFolderId]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const [folderInput, setFolderInput] = useState(settings.driveFolderId);
 
-  useEffect(() => {
-    if (showSettings) {
-      // If the current ID matches the default one, let's show the full URL as an example
-      if (settings.driveFolderId === '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR' || settings.driveFolderId.includes('1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR')) {
-        setFolderInput('https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR');
-      } else if (settings.driveFolderId.startsWith('AIzaSy')) {
-        setFolderInput('https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR');
-      } else {
-        setFolderInput(settings.driveFolderId);
-      }
-    }
-  }, [showSettings, settings.driveFolderId]);
-
   const extractFolderId = (input: string) => {
     if (!input) return '';
     const trimmed = input.trim();
     
-    // Try to extract ID from standard Google Drive URLs
-    const driveMatch = trimmed.match(/folders\/([a-zA-Z0-9_-]{25,})/) || 
-                       trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]{25,})/) ||
-                       trimmed.match(/[?&]id=([a-zA-Z0-9_-]{25,})/);
-    
-    if (driveMatch) {
-      return driveMatch[1];
-    }
-
-    // If it's a URL but not a standard Drive one, let's keep it for the server to resolve (bit.ly, etc)
+    // If it's a URL, let's keep it as is so the server can resolve it (bit.ly, etc)
     if (trimmed.startsWith('http')) {
       return trimmed;
     }
@@ -348,50 +313,8 @@ export default function App() {
 
   const nextSlide = useCallback(() => {
     if (files.length === 0) return;
-    const nextIdx = (currentIndex + 1) % files.length;
-    setNextIndex(nextIdx);
-    setIsNextReady(false);
-  }, [files.length, currentIndex]);
-
-  // Handle media ready state for next slide
-  useEffect(() => {
-    if (nextIndex === null) return;
-    
-    const nextFile = files[nextIndex];
-    if (!nextFile) {
-      setNextIndex(null);
-      return;
-    }
-
-    // If it's a website or YouTube, we consider it "ready" immediately to avoid hanging,
-    // but for images and videos we wait for actual load
-    if (nextFile.isWebsite || nextFile.isYouTube) {
-      setIsNextReady(true);
-      return;
-    }
-
-    if (nextFile.isVideo) {
-      const video = document.createElement('video');
-      video.src = nextFile.url;
-      video.preload = 'auto';
-      video.oncanplaythrough = () => setIsNextReady(true);
-      video.onerror = () => setIsNextReady(true); // Continue on error
-    } else {
-      const img = new Image();
-      img.src = nextFile.url;
-      img.onload = () => setIsNextReady(true);
-      img.onerror = () => setIsNextReady(true); // Continue on error
-    }
-  }, [nextIndex, files]);
-
-  // Perform the actual switch when next is ready
-  useEffect(() => {
-    if (nextIndex !== null && isNextReady) {
-      setCurrentIndex(nextIndex);
-      setNextIndex(null);
-      setIsNextReady(false);
-    }
-  }, [nextIndex, isNextReady]);
+    setCurrentIndex(prev => (prev + 1) % files.length);
+  }, [files.length]);
 
   const nextAudio = useCallback(() => {
     if (audioFiles.length === 0) return;
@@ -412,7 +335,7 @@ export default function App() {
   }, [audioFiles.length, currentAudioIndex]);
 
   useEffect(() => {
-    if (!isPlaying || files.length === 0 || nextIndex !== null) return;
+    if (!isPlaying || files.length === 0) return;
 
     const currentFile = files[currentIndex];
     if (!currentFile) {
@@ -439,7 +362,7 @@ export default function App() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPlaying, currentIndex, nextIndex, files, settings.slideDuration, settings.websiteDuration, nextSlide]);
+  }, [isPlaying, currentIndex, files, settings.slideDuration, settings.websiteDuration, nextSlide]);
 
   // Check if current stream file still exists in Drive
   useEffect(() => {
@@ -512,33 +435,6 @@ export default function App() {
 
   const startPlayer = () => {
     setIsPlaying(true);
-    
-    // Master Audio Unlock for Browsers
-    try {
-      // 1. Unlock Web Audio API
-      const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
-      if (AudioContextClass) {
-        const ctx = new AudioContextClass();
-        if (ctx.state === 'suspended') {
-          ctx.resume();
-        }
-      }
-      
-      // 2. Unlock HTML5 Audio
-      if (audioRef.current) {
-        audioRef.current.play().then(() => {
-          audioRef.current?.pause();
-        }).catch(() => {});
-      }
-
-      // 3. Unlock Silent Audio
-      if (silentAudioRef.current) {
-        silentAudioRef.current.play().catch(() => {});
-      }
-    } catch (e) {
-      console.warn('Audio unlock failed:', e);
-    }
-
     // Request full screen
     if (document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch(err => {
@@ -550,53 +446,19 @@ export default function App() {
   const currentFile = files[currentIndex];
 
   useEffect(() => {
-    if (!isPlaying || settings.appRefreshInterval <= 0 || showSettings) return;
-    
-    // Minimum 30 seconds to prevent infinite reload loops
-    const intervalTime = Math.max(settings.appRefreshInterval, 30000);
+    if (!isPlaying || settings.appRefreshInterval <= 0) return;
 
     const interval = setInterval(() => {
       window.location.reload();
-    }, intervalTime);
+    }, settings.appRefreshInterval);
 
     return () => clearInterval(interval);
-  }, [isPlaying, settings.appRefreshInterval, showSettings]);
+  }, [isPlaying, settings.appRefreshInterval]);
 
   const [websiteUrl, setWebsiteUrl] = useState<string | null>(null);
   const [websiteKey, setWebsiteKey] = useState(0);
   const [websiteError, setWebsiteError] = useState<string | null>(null);
-  
-  // Media Caching Logic for Offline Resilience
-  useEffect(() => {
-    if (!files.length || !isPlaying) return;
-    
-    const cacheNextItems = async () => {
-      if (!('caches' in window)) return;
-      
-      try {
-        const cache = await caches.open('media-cache');
-        // Cache the next 5 items
-        for (let i = 1; i <= 5; i++) {
-          const nextIdx = (currentIndex + i) % files.length;
-          const file = files[nextIdx];
-          if (file && file.url && !file.isYouTube && !file.isWebsite) {
-            const cachedResponse = await cache.match(file.url);
-            if (!cachedResponse) {
-              console.log(`Caching media in background: ${file.name}`);
-              cache.add(file.url).catch(() => {});
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('Cache error:', e);
-      }
-    };
-
-    cacheNextItems();
-  }, [currentIndex, files, isPlaying]);
-
   const audioRef = useRef<HTMLAudioElement>(null);
-  const silentAudioRef = useRef<HTMLAudioElement>(null);
   const ytPlayerRef = useRef<any>(null);
   const settingsRef = useRef(settings);
 
@@ -656,9 +518,9 @@ export default function App() {
         
         let finalUrl = data.url;
         if (isYouTube) {
-          // Use mute=1 to guarantee autoplay, then unmute via API
-          // Removing origin as it can sometimes cause issues in sandboxed environments
-          finalUrl = `https://www.youtube.com/embed/${ytId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${ytId}&rel=0&modestbranding=1&playsinline=1&enablejsapi=1`;
+          // Use settings.isMuted directly in URL, but also handle via API
+          // Removing origin to see if it improves autoplay reliability in preview
+          finalUrl = `https://www.youtube.com/embed/${ytId}?autoplay=1&mute=${settings.isMuted ? 1 : 0}&controls=0&loop=1&playlist=${ytId}&rel=0&modestbranding=1&playsinline=1&enablejsapi=1`;
         } else if (isVideoLink) {
           finalUrl = `/api/stream-proxy?url=${encodeURIComponent(data.url)}`;
         }
@@ -675,20 +537,17 @@ export default function App() {
   }, [currentFile]);
 
   useEffect(() => {
-    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval <= 0 || currentFile.isStream || showSettings) return;
-    
-    // Minimum 10 seconds for website refresh
-    const intervalTime = Math.max(settings.websiteRefreshInterval, 10000);
+    if (!isPlaying || !currentFile || !currentFile.isWebsite || settings.websiteRefreshInterval < 5000 || currentFile.isStream) return;
 
     const interval = setInterval(() => {
       // Re-fetch the URL from the server silently
       fetchWebsiteUrl(true);
       // Also increment key to force iframe reload
       setWebsiteKey(prev => prev + 1);
-    }, intervalTime);
+    }, settings.websiteRefreshInterval);
 
     return () => clearInterval(interval);
-  }, [isPlaying, currentFile, settings.websiteRefreshInterval, fetchWebsiteUrl, showSettings]);
+  }, [isPlaying, currentFile, settings.websiteRefreshInterval, fetchWebsiteUrl]);
 
   useEffect(() => {
     if (!isPlaying || !currentFile || !currentFile.isWebsite) {
@@ -715,8 +574,7 @@ export default function App() {
         if (ytId) {
           console.log('Auto-detected YouTube URL:', websiteUrl);
           setFiles(prev => prev.map(f => f.id === currentFile.id ? { ...f, isStream: true, isYouTube: true } : f));
-          // Use mute=1 to guarantee autoplay
-          setWebsiteUrl(`https://www.youtube.com/embed/${ytId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${ytId}&rel=0&modestbranding=1&playsinline=1&enablejsapi=1`);
+          setWebsiteUrl(`https://www.youtube.com/embed/${ytId}?autoplay=1&mute=${settings.isMuted ? 1 : 0}&controls=0&loop=1&playlist=${ytId}&rel=0&modestbranding=1&playsinline=1&enablejsapi=1`);
         }
       }
     }
@@ -762,12 +620,11 @@ export default function App() {
                 }
               };
 
-              // Try multiple times with increasing delays
+              // Try multiple times
               forceUnmute();
-              [100, 500, 1000, 2000, 3000, 5000].forEach(delay => setTimeout(forceUnmute, delay));
+              [500, 1000, 2000, 4000].forEach(delay => setTimeout(forceUnmute, delay));
             },
             'onStateChange': (event: any) => {
-              console.log('YouTube Player State Change:', event.data);
               if (event.data === (window as any).YT.PlayerState.PLAYING) {
                 if (!settingsRef.current.isMuted) {
                   event.target.unMute();
@@ -775,10 +632,6 @@ export default function App() {
                 }
               }
               if (event.data === (window as any).YT.PlayerState.ENDED) {
-                event.target.playVideo();
-              }
-              // If paused or unstarted, try to play
-              if (event.data === (window as any).YT.PlayerState.PAUSED || event.data === (window as any).YT.PlayerState.UNSTARTED) {
                 event.target.playVideo();
               }
             }
@@ -804,6 +657,25 @@ export default function App() {
   }, [currentFile?.id, websiteUrl, isPlaying]); // Removed settings.isMuted to prevent re-init
 
   useEffect(() => {
+    const handleGlobalClick = () => {
+      if (ytPlayerRef.current && ytPlayerRef.current.unMute && !settingsRef.current.isMuted) {
+        try {
+          console.log('Global click detected, attempting to unmute YouTube...');
+          ytPlayerRef.current.unMute();
+          ytPlayerRef.current.setVolume(100);
+          ytPlayerRef.current.playVideo();
+        } catch (e) {}
+      }
+    };
+    window.addEventListener('click', handleGlobalClick);
+    window.addEventListener('touchstart', handleGlobalClick);
+    return () => {
+      window.removeEventListener('click', handleGlobalClick);
+      window.removeEventListener('touchstart', handleGlobalClick);
+    };
+  }, []);
+
+  useEffect(() => {
     if (ytPlayerRef.current && ytPlayerRef.current.unMute) {
       if (settings.isMuted) {
         try { ytPlayerRef.current.mute(); } catch (e) {}
@@ -815,112 +687,6 @@ export default function App() {
       }
     }
   }, [settings.isMuted]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (ytPlayerRef.current && !settingsRef.current.isMuted) {
-        try {
-          // 1. Try API
-          if (typeof ytPlayerRef.current.unMute === 'function') {
-            ytPlayerRef.current.unMute();
-            ytPlayerRef.current.setVolume(100);
-            if (ytPlayerRef.current.getPlayerState && ytPlayerRef.current.getPlayerState() !== 1) {
-              ytPlayerRef.current.playVideo();
-            }
-          }
-          
-          // 2. Try PostMessage fallback (very aggressive)
-          const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
-          if (iframe && iframe.contentWindow) {
-            const commands = [
-              { event: 'command', func: 'unMute', args: [] },
-              { event: 'command', func: 'setVolume', args: [100] },
-              { event: 'command', func: 'playVideo', args: [] }
-            ];
-            commands.forEach(cmd => {
-              iframe.contentWindow?.postMessage(JSON.stringify(cmd), '*');
-            });
-          }
-        } catch (e) {}
-      }
-    }, 500); // Check every 500ms for the first few seconds
-    
-    // User requested "7-second kickstart" - a forced "touch" to ensure sound/play
-    const kickstartTimeout = setTimeout(() => {
-      console.log('7-second kickstart triggered');
-      if (ytPlayerRef.current && !settingsRef.current.isMuted) {
-        try {
-          ytPlayerRef.current.unMute();
-          ytPlayerRef.current.setVolume(100);
-          ytPlayerRef.current.playVideo();
-          
-          const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
-          iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
-          iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*');
-          iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
-        } catch (e) {}
-      }
-    }, 7000);
-
-    // Stop aggressive check after 10 seconds to save resources, but keep a slower one
-    const timeout = setTimeout(() => {
-      clearInterval(interval);
-      const slowerInterval = setInterval(() => {
-        if (ytPlayerRef.current && !settingsRef.current.isMuted) {
-          const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
-          iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
-        }
-      }, 3000);
-      (window as any)._ytSlowerInterval = slowerInterval;
-    }, 10000);
-
-    return () => {
-      clearInterval(interval);
-      clearTimeout(kickstartTimeout);
-      clearTimeout(timeout);
-      if ((window as any)._ytSlowerInterval) clearInterval((window as any)._ytSlowerInterval);
-    };
-  }, [currentIndex]); // Re-run on every video change
-
-  useEffect(() => {
-    const handleGlobalInteraction = () => {
-      if (!settingsRef.current.isMuted) {
-        // Try API
-        if (ytPlayerRef.current && ytPlayerRef.current.unMute) {
-          try {
-            ytPlayerRef.current.unMute();
-            ytPlayerRef.current.setVolume(100);
-            ytPlayerRef.current.playVideo();
-          } catch (e) {}
-        }
-        
-        // Try PostMessage fallback
-        const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
-        if (iframe && iframe.contentWindow) {
-          try {
-            iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
-            iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*');
-            iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
-          } catch (e) {}
-        }
-
-        // Also unlock silent audio if not playing
-        if (silentAudioRef.current) {
-          silentAudioRef.current.play().catch(() => {});
-        }
-      }
-    };
-    window.addEventListener('click', handleGlobalInteraction);
-    window.addEventListener('touchstart', handleGlobalInteraction);
-    window.addEventListener('mousedown', handleGlobalInteraction);
-    window.addEventListener('keydown', handleGlobalInteraction);
-    return () => {
-      window.removeEventListener('click', handleGlobalInteraction);
-      window.removeEventListener('touchstart', handleGlobalInteraction);
-      window.removeEventListener('mousedown', handleGlobalInteraction);
-      window.removeEventListener('keydown', handleGlobalInteraction);
-    };
-  }, []);
 
   const toggleDisplayMode = () => {
     const modes: DisplayMode[] = ['fill', 'fit', 'stretch'];
@@ -941,7 +707,7 @@ export default function App() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-black text-white">
+      <div className="flex items-center justify-center min-h-screen w-full overflow-x-hidden bg-black text-white">
         <Loader2 className="w-12 h-12 animate-spin text-blue-500" />
         <span className="ml-4 text-xl font-medium">Sincronizando com Google Drive...</span>
       </div>
@@ -950,55 +716,69 @@ export default function App() {
 
   if (!isPlaying) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-neutral-900 text-white p-6">
+      <div className="flex flex-col items-center justify-center min-h-screen w-full overflow-x-hidden bg-gradient-to-br from-neutral-900 via-neutral-950 to-black text-white p-6">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-center max-w-2xl"
+          className="text-center max-w-2xl w-full flex flex-col items-center relative"
         >
-          <h1 className="text-5xl font-bold mb-4 tracking-tight text-blue-500">RP Midia Indoor</h1>
+          <div className="mb-10 relative">
+            <div className="absolute -inset-6 bg-blue-500/20 blur-3xl rounded-full"></div>
+            <h1 className="text-5xl md:text-6xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-blue-600 relative z-10">
+              RP Midia Indoor
+            </h1>
+          </div>
           
-          <div className="flex gap-4 justify-center items-center">
+          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center w-full max-w-md relative">
             <button 
               onClick={startPlayer}
               disabled={files.length === 0}
-              className={`flex items-center gap-2 px-8 py-4 rounded-full text-xl font-bold transition-all transform shadow-lg ${
+              className={`flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-lg font-semibold transition-all transform shadow-lg w-full sm:w-auto ${
                 files.length > 0 
-                ? "bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 active:scale-95 shadow-blue-900/20" 
-                : "bg-neutral-700 text-neutral-500 cursor-not-allowed"
+                ? "bg-blue-600 hover:bg-blue-500 text-white hover:-translate-y-1 active:translate-y-0 shadow-blue-900/30" 
+                : "bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-700"
               }`}
             >
-              {isFetching && files.length === 0 ? (
-                <>
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                  CARREGANDO...
-                </>
-              ) : (
-                <>
-                  <Play className="fill-current" /> INICIAR
-                </>
-              )}
+              <Play className="w-5 h-5 fill-current" /> 
+              INICIAR
             </button>
             <button 
               onClick={() => setShowSettings(true)}
-              className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-8 py-4 rounded-full text-xl font-bold transition-all"
+              className="flex items-center justify-center gap-2 bg-neutral-800/80 backdrop-blur-md hover:bg-neutral-700 border border-neutral-700/50 text-white px-6 py-3 rounded-2xl text-lg font-semibold transition-all w-full sm:w-auto hover:-translate-y-1 active:translate-y-0"
             >
-              <Settings /> CONFIGS
+              <Settings className="w-5 h-5" /> CONFIGS
             </button>
-            {isFetching && <Loader2 className="w-6 h-6 animate-spin text-blue-500" />}
+            {isFetching && (
+              <div className="absolute -right-12 sm:-right-16 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+              </div>
+            )}
           </div>
 
-          {files.length === 0 && settings.driveFolderId && !isFetching && (
-            <div className="mt-8 p-4 bg-red-900/20 border border-red-900/30 rounded-2xl text-red-400 text-sm">
-              <p className="font-bold mb-1">Nenhum arquivo encontrado!</p>
-              <p className="opacity-80">Verifique se a pasta do Google Drive é <strong>PÚBLICA</strong> (Qualquer pessoa com o link pode ver) e se contém imagens ou vídeos.</p>
-              <button 
-                onClick={() => { setIsLoading(true); fetchFiles(); }}
-                className="mt-4 px-4 py-2 bg-red-900/40 hover:bg-red-900/60 rounded-lg text-xs font-bold transition-all underline"
-              >
-                Tentar novamente agora
-              </button>
-            </div>
+          {files.length > 0 && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="mt-8 flex items-center gap-3 text-sm text-neutral-300 bg-neutral-800/40 backdrop-blur-sm px-5 py-2.5 rounded-full border border-neutral-700/50 shadow-lg"
+            >
+              <div className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+              </div>
+              <span>
+                <strong className="text-white">{files.length}</strong> {files.length === 1 ? 'arquivo sincronizado' : 'arquivos sincronizados'} e pronto para exibição
+              </span>
+            </motion.div>
+          )}
+
+          {files.length === 0 && settings.driveFolderId && (
+            <button 
+              onClick={() => { setIsLoading(true); fetchFiles(); }}
+              className="mt-8 text-neutral-400 hover:text-blue-400 text-sm transition-colors"
+            >
+              Nenhum arquivo encontrado. <span className="underline">Tentar novamente</span>
+            </button>
           )}
         </motion.div>
 
@@ -1016,18 +796,8 @@ export default function App() {
                   <textarea 
                     placeholder="Cole o link da pasta pública aqui..."
                     value={folderInput}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val.trim().startsWith('AIzaSy')) {
-                        alert('Ops! Parece que você colou uma chave API. Por favor, cole o link da pasta do Google Drive.');
-                        return;
-                      }
-                      setFolderInput(val);
-                    }}
+                    onChange={(e) => setFolderInput(e.target.value)}
                     rows={2}
-                    autoComplete="off"
-                    data-lpignore="true"
-                    spellCheck="false"
                     className="w-full bg-neutral-800 p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-sm resize-none break-all"
                   />
                 </div>
@@ -1106,7 +876,6 @@ export default function App() {
                     <input 
                       type="number"
                       min="1"
-                      autoComplete="off"
                       value={settings.slideDuration / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1123,7 +892,6 @@ export default function App() {
                     <input 
                       type="number"
                       min="1"
-                      autoComplete="off"
                       value={settings.websiteDuration / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1140,7 +908,6 @@ export default function App() {
                     <input 
                       type="number"
                       min="10"
-                      autoComplete="off"
                       value={settings.syncInterval / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1157,7 +924,6 @@ export default function App() {
                     <input 
                       type="number"
                       min="0"
-                      autoComplete="off"
                       value={settings.websiteRefreshInterval / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1174,7 +940,6 @@ export default function App() {
                     <input 
                       type="number"
                       min="0"
-                      autoComplete="off"
                       value={settings.appRefreshInterval / 1000}
                       onChange={(e) => {
                         const val = parseInt(e.target.value) * 1000;
@@ -1221,11 +986,6 @@ export default function App() {
                   localStorage.setItem('app_settings', JSON.stringify(newSettings));
                   setShowSettings(false);
                   setIsLoading(true); // Trigger reload
-                  
-                  // If the user pasted a URL, let's keep it in the input for next time they open settings
-                  // but the settings.driveFolderId will have the extracted ID
-                  setFolderInput(folderInput);
-                  
                   fetchFiles();
                 }}
                 className="w-full bg-blue-600 mt-4 py-3 rounded-xl font-bold text-sm"
@@ -1238,105 +998,6 @@ export default function App() {
       </div>
     );
   }
-
-  const renderFile = (file: DriveFile, isPreload: boolean) => {
-    if (file.isVideo) {
-      return (
-        <div className="relative w-full h-full">
-          <video
-            ref={isPreload ? undefined : videoRef}
-            src={file.url}
-            autoPlay={!isPreload}
-            muted={settings.isMuted}
-            playsInline
-            onEnded={isPreload ? undefined : nextSlide}
-            onLoadedData={() => {
-              if (!isPreload && videoRef.current) {
-                videoRef.current.play().catch(err => {
-                  console.log("Autoplay blocked, user interaction needed", err);
-                });
-              }
-            }}
-            onError={(e) => {
-              if (!isPreload) {
-                console.error('Video error:', e);
-                setTimeout(nextSlide, 2000);
-              }
-            }}
-            className="w-full h-full"
-            style={{ objectFit: getObjectFit() as any }}
-          />
-        </div>
-      );
-    } else if (file.isWebsite) {
-      return (
-        <div className="w-full h-full bg-white relative">
-          {websiteUrl ? (
-            file.isStream ? (
-              file.isYouTube ? (
-                <div className="w-full h-full relative group">
-                  <iframe 
-                    id={isPreload ? undefined : "youtube-player"}
-                    key={websiteKey}
-                    src={websiteUrl} 
-                    className="w-full h-full border-none"
-                    title={file.name}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                  />
-                  {!isPreload && (
-                    <div 
-                      className="absolute inset-0 z-10 cursor-none bg-transparent"
-                      onClick={() => {
-                        console.log('Overlay clicked, forcing YouTube play/unmute');
-                        if (ytPlayerRef.current) {
-                          ytPlayerRef.current.unMute();
-                          ytPlayerRef.current.setVolume(100);
-                          ytPlayerRef.current.playVideo();
-                        }
-                        const iframe = document.getElementById('youtube-player') as HTMLIFrameElement;
-                        if (iframe && iframe.contentWindow) {
-                          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unMute' }), '*');
-                          iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'playVideo' }), '*');
-                        }
-                      }}
-                    />
-                  )}
-                </div>
-              ) : (
-                <StreamPlayer 
-                  url={websiteUrl} 
-                  isMuted={settings.isMuted} 
-                  onEnded={isPreload ? undefined : nextSlide}
-                />
-              )
-            ) : (
-              <iframe 
-                key={websiteKey}
-                src={websiteUrl} 
-                className="w-full h-full border-none"
-                title={file.name}
-                onError={() => !isPreload && setWebsiteError('Erro ao carregar site')}
-              />
-            )
-          ) : (
-            <div className="flex items-center justify-center h-full text-neutral-500">
-              {websiteError || 'Carregando site...'}
-            </div>
-          )}
-        </div>
-      );
-    } else {
-      return (
-        <img
-          src={file.url}
-          alt={file.name}
-          className="w-full h-full"
-          style={{ objectFit: getObjectFit() as any }}
-          referrerPolicy="no-referrer"
-        />
-      );
-    }
-  };
 
   const getOrientationStyles = (): CSSProperties => {
     if (settings.orientation === 'vertical') {
@@ -1358,34 +1019,141 @@ export default function App() {
   };
 
   return (
-    <div className="relative w-screen h-screen bg-black overflow-hidden cursor-none">
-      {/* Silent Audio Unlocker */}
-      <audio 
-        ref={silentAudioRef}
-        src="data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" 
-        loop 
-        style={{ display: 'none' }}
-      />
-      
-      <div style={getOrientationStyles()}>
-        {/* Render Next File behind current one to pre-warm it */}
-        {nextIndex !== null && files[nextIndex] && (
-          <div
-            key={`next-${files[nextIndex].id}`}
-            className="absolute inset-0 flex items-center justify-center bg-black z-0 opacity-0"
-          >
-            {renderFile(files[nextIndex], true)}
-          </div>
-        )}
+    <div className="relative w-full h-screen bg-black overflow-hidden cursor-none">
+      {/* Sound Indicator/Toggle */}
+      <div className="absolute top-4 right-4 z-50 flex items-center gap-2">
+        <button 
+          onClick={() => {
+            const newSettings = { ...settings, isMuted: !settings.isMuted };
+            setSettings(newSettings);
+            localStorage.setItem('app_settings', JSON.stringify(newSettings));
+          }}
+          className={`p-3 rounded-full backdrop-blur-md transition-all ${
+            settings.isMuted ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-black/40 text-white/60 hover:text-white border border-white/10'
+          }`}
+          title={settings.isMuted ? "Ativar Som" : "Mutar"}
+        >
+          {settings.isMuted ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
+        </button>
+      </div>
 
-        {currentFile && (
-          <div
-            key={currentFile.id}
-            className="absolute inset-0 flex items-center justify-center bg-black z-10"
-          >
-            {renderFile(currentFile, false)}
-          </div>
-        )}
+      <div style={getOrientationStyles()}>
+        <AnimatePresence mode="wait">
+          {currentFile && (
+            <motion.div
+              key={currentFile.id}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.8 }}
+              className="absolute inset-0 flex items-center justify-center"
+            >
+              {currentFile.isVideo ? (
+                <div className="relative w-full h-full">
+                  <video
+                    ref={videoRef}
+                    src={currentFile.url}
+                    autoPlay
+                    muted={settings.isMuted}
+                    playsInline
+                    onEnded={nextSlide}
+                    onLoadedData={() => {
+                      if (videoRef.current) {
+                        videoRef.current.play().catch(err => {
+                          console.log("Autoplay blocked, user interaction needed", err);
+                        });
+                      }
+                    }}
+                    onError={(e) => {
+                      console.error('Video error:', e);
+                      setTimeout(nextSlide, 2000);
+                    }}
+                    className="w-full h-full"
+                    style={{ objectFit: getObjectFit() as any }}
+                  />
+                </div>
+              ) : currentFile.isWebsite ? (
+                <div className="w-full h-full bg-white relative">
+                  {websiteUrl ? (
+                    currentFile.isStream ? (
+                      currentFile.isYouTube ? (
+                        <div className="w-full h-full relative">
+                          <iframe 
+                            id="youtube-player"
+                            key={websiteKey}
+                            src={websiteUrl} 
+                            className="w-full h-full border-none"
+                            title={currentFile.name}
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                          />
+                          {/* Fallback Unmute Overlay - only shows if muted but settings say otherwise */}
+                          {!settings.isMuted && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (ytPlayerRef.current) {
+                                    ytPlayerRef.current.unMute();
+                                    ytPlayerRef.current.setVolume(100);
+                                    ytPlayerRef.current.playVideo();
+                                  }
+                                }}
+                                className="pointer-events-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-full text-lg font-bold shadow-2xl shadow-blue-500/50 animate-bounce flex items-center gap-3"
+                              >
+                                <Volume2 className="w-8 h-8" />
+                                CLIQUE AQUI PARA ATIVAR O SOM
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <StreamPlayer url={websiteUrl} isMuted={settings.isMuted} />
+                      )
+                    ) : (
+                      <iframe 
+                        key={websiteKey}
+                        src={websiteUrl} 
+                        className="w-full h-full border-none"
+                        title={currentFile.name}
+                        allow="autoplay; fullscreen"
+                        referrerPolicy="no-referrer"
+                      />
+                    )
+                  ) : websiteError ? (
+                    <div className="flex flex-col items-center justify-center h-full text-neutral-500 p-8 text-center gap-4">
+                      <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center">
+                        <X className="w-8 h-8 text-red-500" />
+                      </div>
+                      <div>
+                        <p className="text-lg font-bold text-neutral-800">Erro ao carregar</p>
+                        <p className="text-sm text-neutral-500 mt-1">{websiteError}</p>
+                      </div>
+                      <button 
+                        onClick={() => fetchWebsiteUrl()}
+                        className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        Tentar novamente
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <img
+                  src={currentFile.url}
+                  alt={currentFile.name}
+                  className="w-full h-full pointer-events-none select-none"
+                  style={{ objectFit: getObjectFit() as any }}
+                  referrerPolicy="no-referrer"
+                />
+              )}
+
+              {/* Overlay for file name (optional, can be hidden) */}
+              <div className="absolute top-4 left-4 bg-black/50 backdrop-blur-md px-4 py-2 rounded-lg text-white text-sm font-medium opacity-0 hover:opacity-100 transition-opacity">
+                {currentFile.name}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Background Audio */}
@@ -1402,32 +1170,14 @@ export default function App() {
         />
       )}
 
-      {/* Pre-load and Cache next items */}
+      {/* Pre-load next item */}
       {files.length > 1 && (
         <div className="hidden">
-          {/* Pre-load next 3 items for better transition and offline support */}
-          {[1, 2, 3].map(offset => {
-            const nextIdx = (currentIndex + offset) % files.length;
-            const file = files[nextIdx];
-            if (!file) return null;
-            
-            // Background caching logic
-            if ('caches' in window && file.url) {
-              caches.open('media-cache').then(cache => {
-                cache.add(file.url).catch(() => {});
-              });
-            }
-
-            if (file.isVideo) {
-              return <video key={`preload-${file.id}`} src={file.url} preload="auto" muted />;
-            } else if (file.isWebsite && file.isStream) {
-              // For streams, we can't easily pre-load without starting the player, 
-              // but we can at least resolve the URL
-              return null;
-            } else {
-              return <img key={`preload-${file.id}`} src={file.url} referrerPolicy="no-referrer" />;
-            }
-          })}
+          {files[(currentIndex + 1) % files.length].isVideo ? (
+            <video src={files[(currentIndex + 1) % files.length].url} preload="auto" />
+          ) : (
+            <img src={files[(currentIndex + 1) % files.length].url} referrerPolicy="no-referrer" />
+          )}
         </div>
       )}
 

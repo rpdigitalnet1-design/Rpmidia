@@ -48,7 +48,7 @@ async function startServer() {
 
   // API: List files from Google Drive Folder
   app.get('/api/files', async (req, res) => {
-    let folderId = (req.query.folderId as string) || process.env.DRIVE_FOLDER_ID || 'https://drive.google.com/drive/folders/1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR?usp=sharing';
+    let folderId = (req.query.folderId as string) || process.env.DRIVE_FOLDER_ID || '1RqCmlyP_sl9Jdr49SNVOkub80He1AYIR';
     console.log(`[API] Fetching files for folderId: ${folderId}`);
     
     if (!folderId) {
