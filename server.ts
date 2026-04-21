@@ -6,6 +6,89 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
+import { initializeApp } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+
+// Log file for debugging
+const LOG_FILE = path.join(process.cwd(), 'firebase_debug.log');
+const log = (msg: string) => {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  fs.appendFileSync(LOG_FILE, line);
+  console.log(msg);
+};
+
+// Initialize Firebase Admin
+let db: any = null;
+try {
+  log('Checking for Firebase config...');
+  const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(firebaseConfigPath)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+    log(`Config found for project: ${firebaseConfig.projectId}`);
+    
+    // PROPERLY set projectId from config
+    const app = initializeApp({
+      projectId: firebaseConfig.projectId,
+    });
+    log(`Firebase app initialized for project: ${firebaseConfig.projectId}`);
+    
+    db = getFirestore(firebaseConfig.firestoreDatabaseId);
+    log(`Firestore initialized with DB ID: ${firebaseConfig.firestoreDatabaseId}`);
+    
+    // Verify connection and migrate
+    (async () => {
+      try {
+        log('Attempting to list collections to verify permissions...');
+        const collections = await db.listCollections();
+        log(`Successfully connected. Found ${collections.length} collections.`);
+      } catch (e: any) {
+        log(`Verification failed: ${e.message}`);
+        if (e.message.includes('PERMISSION_DENIED')) {
+          log('PERMISSION_DENIED suggests IAM issues with the named database. Trying default database as fallback...');
+          try {
+             const defaultDb = getFirestore();
+             await defaultDb.listCollections();
+             log('Default database is accessible! Switching to default database.');
+             db = defaultDb;
+          } catch (e2: any) {
+             log(`Default database also inaccessible: ${e2.message}`);
+          }
+        }
+      }
+
+      // Run Migration on whatever database we ended up with
+      if (db) {
+        const LICENSES_FILE = path.join(process.cwd(), 'licenses.json');
+        if (fs.existsSync(LICENSES_FILE)) {
+          try {
+            const localLicenses = JSON.parse(fs.readFileSync(LICENSES_FILE, 'utf8'));
+            if (Array.isArray(localLicenses) && localLicenses.length > 0) {
+              log(`Found ${localLicenses.length} local licenses to migrate...`);
+              for (const lic of localLicenses) {
+                const snapshot = await db.collection('licenses').where('code', '==', lic.code).get();
+                if (snapshot.empty) {
+                  const { id, ...licData } = lic;
+                  await db.collection('licenses').add({ ...licData });
+                  log(`Migrated license: ${lic.code} (${lic.clientName})`);
+                } else {
+                  log(`License ${lic.code} already in Firebase, skipping.`);
+                }
+              }
+              fs.renameSync(LICENSES_FILE, LICENSES_FILE + '.backup');
+              log('Migration completed successfully.');
+            }
+          } catch (e: any) {
+            log(`Migration failed: ${e.message}`);
+          }
+        }
+      }
+    })();
+  } else {
+    log('firebase-applet-config.json not found.');
+  }
+} catch (err: any) {
+  log(`Failed to initialize Firebase Admin: ${err.message}`);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +108,352 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
+
+  const LICENSES_FILE = path.join(process.cwd(), 'licenses.json');
+  
+  const getLicensesLocal = () => {
+    try {
+      if (fs.existsSync(LICENSES_FILE)) {
+        return JSON.parse(fs.readFileSync(LICENSES_FILE, 'utf8'));
+      }
+      const BACKUP = LICENSES_FILE + '.backup';
+      if (fs.existsSync(BACKUP)) {
+        return JSON.parse(fs.readFileSync(BACKUP, 'utf8'));
+      }
+    } catch (e) {}
+    return [];
+  };
+
+  const saveLicensesLocal = (licenses: any[]) => {
+    try {
+      fs.writeFileSync(LICENSES_FILE, JSON.stringify(licenses, null, 2));
+    } catch (e) {
+      log(`Failed to save local licenses: ${e}`);
+    }
+  };
+
+  // API: Get all licenses
+  app.get('/api/admin/licenses', async (req, res) => {
+    try {
+      if (db) {
+        const snapshot = await db.collection('licenses').get();
+        const licenses = snapshot.docs.map((doc: any) => {
+          const data = doc.data();
+          const isOnline = data.lastSeen ? (new Date().getTime() - new Date(data.lastSeen).getTime() < 30000) : false;
+          return { id: doc.id, ...data, isOnline };
+        });
+        return res.json(licenses);
+      }
+    } catch (error: any) {
+      log(`GET /api/admin/licenses failed: ${error.message}`);
+    }
+    const local = getLicensesLocal().map((l: any) => ({
+      ...l,
+      isOnline: l.lastSeen ? (new Date().getTime() - new Date(l.lastSeen).getTime() < 30000) : false
+    }));
+    res.json(local);
+  });
+
+  // API: Check license status (public)
+  app.get('/api/status/:code', async (req, res) => {
+    let { code } = req.params;
+    if (!code) return res.status(400).json({ error: 'Code required' });
+    code = code.trim().toUpperCase();
+
+    try {
+      if (db) {
+        const snapshot = await db.collection('licenses').where('code', '==', code).limit(1).get();
+        if (!snapshot.empty) {
+          const doc = snapshot.docs[0];
+          const data = doc.data();
+          const isOnline = data.lastSeen ? (new Date().getTime() - new Date(data.lastSeen).getTime() < 30000) : false;
+          return res.json({
+            clientName: data.clientName,
+            lastSeen: data.lastSeen,
+            isPlaying: data.isPlaying,
+            isOnline,
+            isActivated: !!data.activatedAt
+          });
+        }
+      }
+    } catch (error: any) {
+      log(`GET /api/status/${code} Firebase failure: ${error.message}`);
+    }
+
+    const licenses = getLicensesLocal();
+    const found = licenses.find((l: any) => l.code && l.code.trim().toUpperCase() === code);
+    if (found) {
+      const isOnline = found.lastSeen ? (new Date().getTime() - new Date(found.lastSeen).getTime() < 30000) : false;
+      return res.json({
+        clientName: found.clientName,
+        lastSeen: found.lastSeen,
+        isPlaying: found.isPlaying,
+        isOnline,
+        isActivated: !!found.activatedAt
+      });
+    }
+    res.status(404).json({ error: 'Código não encontrado' });
+  });
+
+  // API: Create new license
+  app.post('/api/admin/licenses', async (req, res) => {
+    const { code, clientName } = req.body;
+    if (!code || !clientName) return res.status(400).json({ error: 'Missing data' });
+    
+    const newLic = {
+      code,
+      clientName,
+      createdAt: new Date().toISOString(),
+      isPlaying: false
+    };
+
+    try {
+      if (db) {
+        await db.collection('licenses').add(newLic);
+        return res.json({ success: true });
+      }
+    } catch (error: any) {
+      log(`POST /api/admin/licenses failed: ${error.message}`);
+    }
+    
+    const licenses = getLicensesLocal();
+    licenses.push({ id: Math.random().toString(36).substr(2, 9), ...newLic });
+    saveLicensesLocal(licenses);
+    res.json({ success: true });
+  });
+
+  // API: Update license (Edit)
+  app.put('/api/admin/licenses/:id', async (req, res) => {
+    const { id } = req.params;
+    const { clientName, code, resetActivation } = req.body;
+    
+    try {
+      if (db) {
+        const updateData: any = {};
+        if (clientName) updateData.clientName = clientName;
+        if (code) updateData.code = code.trim().toUpperCase();
+        if (resetActivation) {
+          updateData.activatedAt = FieldValue.delete();
+          updateData.deviceId = FieldValue.delete();
+        }
+        await db.collection('licenses').doc(id).update(updateData);
+        log(`License updated in Firebase: ${id}`);
+        return res.json({ success: true });
+      }
+    } catch (error: any) {
+      log(`PUT /api/admin/licenses failed: ${error.message}`);
+    }
+
+    const licenses = getLicensesLocal();
+    const index = licenses.findIndex((l: any) => l.id === id);
+    if (index !== -1) {
+      if (clientName) licenses[index].clientName = clientName;
+      if (code) licenses[index].code = code.trim().toUpperCase();
+      if (resetActivation) {
+        delete licenses[index].activatedAt;
+        delete licenses[index].deviceId;
+      }
+      saveLicensesLocal(licenses);
+      log(`License updated locally: ${id}`);
+      return res.json({ success: true });
+    }
+    res.status(404).json({ error: 'License not found locally' });
+  });
+
+  // API: Delete license
+  app.delete('/api/admin/licenses/:id', async (req, res) => {
+    const { id } = req.params;
+    log(`Deletando licença: ${id}`);
+    try {
+      if (db) {
+        await db.collection('licenses').doc(id).delete();
+        log(`Licença deletada do Firebase: ${id}`);
+        return res.json({ success: true });
+      }
+    } catch (error: any) {
+      log(`DELETE /api/admin/licenses failed: ${error.message}`);
+    }
+    const licenses = getLicensesLocal();
+    const filtered = licenses.filter((l: any) => l.id !== id);
+    saveLicensesLocal(filtered);
+    log(`Licença deletada localmente (ou não encontrada no Firebase): ${id}`);
+    res.json({ success: true });
+  });
+
+  // API: Activate license
+  app.post('/api/activate', async (req, res) => {
+    let { code, deviceId, isPlaying } = req.body;
+    if (!deviceId) return res.status(400).json({ error: 'DeviceId required' });
+    if (!code) return res.status(400).json({ error: 'Code required' });
+    
+    code = code.trim().toUpperCase();
+    log(`Activation attempt - Code: ${code}, Device: ${deviceId}`);
+
+    try {
+      if (db) {
+        const snapshot = await db.collection('licenses').where('code', '==', code).limit(1).get();
+        if (!snapshot.empty) {
+          const doc = snapshot.docs[0];
+          const license = doc.data();
+          if (license.deviceId && license.deviceId !== deviceId) {
+            log(`Activation failed - Device mismatch for ${code}`);
+            return res.status(403).json({ error: 'Este código já está em uso em outro dispositivo.' });
+          }
+          const updateData: any = { lastSeen: new Date().toISOString(), isPlaying: !!isPlaying };
+          if (!license.activatedAt) {
+            updateData.activatedAt = new Date().toISOString();
+            updateData.deviceId = deviceId;
+          }
+          await doc.ref.update(updateData);
+          log(`Activation success (Firebase) for ${code}`);
+          return res.json({ 
+            success: true, 
+            clientName: license.clientName,
+            settings: license.settings || null
+          });
+        }
+      }
+    } catch (error: any) {
+      log(`POST /api/activate Firebase failure: ${error.message}`);
+    }
+
+    // Try Local
+    const licenses = getLicensesLocal();
+    log(`Searching in ${licenses.length} local licenses...`);
+    const index = licenses.findIndex((l: any) => l.code && l.code.trim().toUpperCase() === code);
+    
+    if (index !== -1) {
+      const license = licenses[index];
+      if (license.deviceId && license.deviceId !== deviceId) {
+        log(`Activation failed (Local) - Device mismatch for ${code}`);
+        return res.status(403).json({ error: 'Este código já está em uso em outro dispositivo.' });
+      }
+      if (!license.activatedAt) {
+        licenses[index].activatedAt = new Date().toISOString();
+        licenses[index].deviceId = deviceId;
+      }
+      licenses[index].lastSeen = new Date().toISOString();
+      licenses[index].isPlaying = !!isPlaying;
+      saveLicensesLocal(licenses);
+      log(`Activation success (Local) for ${code}`);
+      return res.json({ 
+        success: true, 
+        clientName: licenses[index].clientName,
+        settings: licenses[index].settings || null
+      });
+    }
+    
+    log(`Activation failed - Code ${code} not found anywhere`);
+    res.status(404).json({ error: 'Código não encontrado' });
+  });
+
+  // API: Heartbeat
+  app.post('/api/heartbeat', async (req, res) => {
+    let { code, deviceId, isPlaying } = req.body;
+    if (!code) return res.status(400).json({ error: 'Code required' });
+    code = code.trim().toUpperCase();
+
+    try {
+      if (db) {
+        const snapshot = await db.collection('licenses').where('code', '==', code).limit(1).get();
+        if (!snapshot.empty) {
+          const doc = snapshot.docs[0];
+          const data = doc.data();
+          if (data.deviceId === deviceId) {
+            await doc.ref.update({ lastSeen: new Date().toISOString(), isPlaying: !!isPlaying });
+            return res.json({ success: true, settings: data.settings || null });
+          } else {
+            log(`Heartbeat mismatch (Firebase) - Code: ${code}. DB: ${data.deviceId}, Req: ${deviceId}`);
+            return res.status(403).json({ error: 'Este código está sendo usado em outro dispositivo.' });
+          }
+        }
+      }
+    } catch (error: any) {
+      log(`POST /api/heartbeat Firebase failure: ${error.message}`);
+    }
+
+    const licenses = getLicensesLocal();
+    const index = licenses.findIndex((l: any) => l.code && l.code.trim().toUpperCase() === code);
+    if (index !== -1) {
+      const license = licenses[index];
+      if (license.deviceId === deviceId) {
+        licenses[index].lastSeen = new Date().toISOString();
+        licenses[index].isPlaying = !!isPlaying;
+        saveLicensesLocal(licenses);
+        return res.json({ success: true, settings: licenses[index].settings || null });
+      } else {
+        log(`Heartbeat mismatch (Local) - Code: ${code}. DB: ${license.deviceId}, Req: ${deviceId}`);
+        return res.status(403).json({ error: 'Este código está sendo usado em outro dispositivo.' });
+      }
+    }
+    res.status(404).json({ error: 'Monitoramento não encontrado' });
+  });
+
+  // API: Client Login (Remote Access)
+  app.post('/api/client/login', async (req, res) => {
+    let { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'Code required' });
+    code = code.trim().toUpperCase();
+
+    try {
+      if (db) {
+        const snapshot = await db.collection('licenses').where('code', '==', code).limit(1).get();
+        if (!snapshot.empty) {
+          const doc = snapshot.docs[0];
+          const data = doc.data();
+          return res.json({ 
+            success: true, 
+            clientName: data.clientName,
+            settings: data.settings || {}
+          });
+        }
+      }
+    } catch (error) {
+      log(`Client login Firebase failure: ${error}`);
+    }
+
+    const licenses = getLicensesLocal();
+    const found = licenses.find((l: any) => l.code && l.code.trim().toUpperCase() === code);
+    if (found) {
+      return res.json({ 
+        success: true, 
+        clientName: found.clientName,
+        settings: found.settings || {}
+      });
+    }
+    res.status(404).json({ error: 'Código não encontrado' });
+  });
+
+  // API: Client Update Settings (Remote Access)
+  app.put('/api/client/settings', async (req, res) => {
+    let { code, settings } = req.body;
+    if (!code || !settings) return res.status(400).json({ error: 'Missing data' });
+    code = code.trim().toUpperCase();
+
+    try {
+      if (db) {
+        const snapshot = await db.collection('licenses').where('code', '==', code).limit(1).get();
+        if (!snapshot.empty) {
+          const doc = snapshot.docs[0];
+          await doc.ref.update({ settings });
+          log(`Settings updated (Firebase) for client ${code}`);
+          return res.json({ success: true });
+        }
+      }
+    } catch (error) {
+      log(`Client settings update Firebase failure: ${error}`);
+    }
+
+    const licenses = getLicensesLocal();
+    const index = licenses.findIndex((l: any) => l.code && l.code.trim().toUpperCase() === code);
+    if (index !== -1) {
+      licenses[index].settings = settings;
+      saveLicensesLocal(licenses);
+      log(`Settings updated (Local) for client ${code}`);
+      return res.json({ success: true });
+    }
+    res.status(404).json({ error: 'Código não encontrado' });
+  });
 
   // API: Clear cache
   app.post('/api/cache/clear', (req, res) => {
@@ -157,6 +586,7 @@ async function startServer() {
                   isVideo,
                   isAudio,
                   isWebsite: isWeb,
+                  mimeType: isVideo ? 'video/mp4' : isAudio ? 'audio/mpeg' : isWeb ? 'text/html' : 'image/jpeg',
                   thumbnail: isWeb 
                     ? `https://cdn-icons-png.flaticon.com/512/2965/2965306.png` 
                     : isAudio
@@ -189,6 +619,7 @@ async function startServer() {
                     isVideo,
                     isAudio,
                     isWebsite: isWeb,
+                    mimeType: isVideo ? 'video/mp4' : isAudio ? 'audio/mpeg' : isWeb ? 'text/html' : 'image/jpeg',
                     thumbnail: isWeb 
                       ? `https://cdn-icons-png.flaticon.com/512/2965/2965306.png` 
                       : isAudio
@@ -229,6 +660,7 @@ async function startServer() {
                     isVideo,
                     isAudio,
                     isWebsite: isWeb,
+                    mimeType: isVideo ? 'video/mp4' : isAudio ? 'audio/mpeg' : isWeb ? 'text/html' : 'image/jpeg',
                     thumbnail: isWeb 
                       ? `https://cdn-icons-png.flaticon.com/512/2965/2965306.png` 
                       : isAudio

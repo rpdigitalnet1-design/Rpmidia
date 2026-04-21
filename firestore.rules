@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Licenses collection
+    match /licenses/{licenseId} {
+      // Helper functions
+      function isSignedIn() {
+        return request.auth != null;
+      }
+      
+      function isValidId(id) {
+        return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      }
+
+      function isValidLicense(data) {
+        return data.code is string && data.code.size() == 6 &&
+               data.clientName is string && data.clientName.size() <= 100 &&
+               data.createdAt is string;
+      }
+
+      // Admin access (using the user's email provided in metadata as an indicator if we had more complex auth, 
+      // but here we are doing server-side proxying for admin, so rules should be simple but secure)
+      // Actually, since we use server-side proxy, we don't strictly need client-side rules for admin,
+      // but it's good practice to have them if the client ever connects directly.
+      
+      // For now, let's assume the server uses Admin SDK or we want to allow the client to activate and heartbeat.
+      
+      // Allow read/list if we know the ID (activation)
+      allow get: if true; 
+      
+      // Allow update for heartbeat (restricted fields)
+      allow update: if (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeen', 'isPlaying', 'activatedAt', 'deviceId'])
+      );
+      
+      // Creation and full updates are handled via server-side admin logic usually, 
+      // but let's secure them if needed.
+    }
+  }
+}

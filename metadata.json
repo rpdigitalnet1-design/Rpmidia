@@ -1,5 +1,6 @@
 {
-  "name": "Remix: RP Midia Indoor",
+  "name": "RP Midia Indoor Pro",
   "description": "Solução profissional de Mídia Indoor com sincronização automática do Google Drive.",
-  "requestFramePermissions": ["screen-wake-lock"]
+  "requestFramePermissions": [],
+  "majorCapabilities": []
 }

@@ -1,0 +1,25 @@
+{
+  "entities": {
+    "License": {
+      "title": "License",
+      "description": "Represents a client license and activation status",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "The unique 6-character activation code" },
+        "clientName": { "type": "string", "description": "The name of the client assigned to this license" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "activatedAt": { "type": "string", "format": "date-time" },
+        "lastSeen": { "type": "string", "format": "date-time" },
+        "deviceId": { "type": "string", "description": "Unique ID of the device activated with this code" },
+        "isPlaying": { "type": "boolean", "description": "Current playback status of the device" }
+      },
+      "required": ["code", "clientName", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/licenses/{licenseId}": {
+      "schema": "License",
+      "description": "Collection of all system licenses"
+    }
+  }
+}
